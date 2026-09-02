@@ -94,17 +94,28 @@ that claim being disclosed. That is selective disclosure working.
 
 ## Known issues
 
-- **Issuance fails at client authentication.** Keycloak rejects the testbed's client
-  attestation at the PAR endpoint with `"Authentication failed."` The reference issuer
-  accepts only attestation-based client authentication, and the testbed's self-signed
-  wallet-provider attestation is not yet accepted. Until this is resolved the wallet
-  cannot hold a credential, so steps 2 and 3 cannot complete. The Verifier tab can still
-  open transactions, and the Issuer tab shows the live issuer metadata.
+- **Presentation is not yet confirmed end to end.** Issuance works: the wallet holds a
+  real PID (`urn:eudi:pid:1`, 26 disclosures) signed by the reference issuer. The wallet
+  also resolves the presentation request, discloses only the requested claims and posts a
+  `vp_token`. The verifier initially rejected it because its attestation classification
+  table ships empty (`Could not find Attestation Classification for vct 'urn:eudi:pid:1'`);
+  that is now configured in `docker-compose.yml`, but the closed loop has not been
+  re-verified since.
 - **Presentation covers SD-JWT VC only.** Presenting an `mso_mdoc` needs a signed
   `DeviceResponse` over a session transcript, which is not implemented. Such a request is
   reported as unsupported. mdocs can still be issued, stored and inspected.
 - **TLS is not verified.** The gateway uses a self-signed certificate and the wallet is
   configured to accept it. Local harness only.
+- **The wallet attests its own keys.** OpenID4VCI requires a key attestation, and
+  attestation-based client authentication requires another; a real wallet receives both
+  from its wallet provider after device attestation. The testbed signs its own and
+  asserts `iso_18045_high` while holding keys in JVM memory. Nothing in the protocol can
+  detect this, which is what makes a software wallet possible at all — but the assertion
+  is untrue, and none of it should travel beyond this harness.
+- **Two upstream files needed fixing** to make any of this work, both patched in
+  `config/status-list/`: the status list endpoint compared the `Accept` header with `==`,
+  returning 406 to every real client, and its URIs pointed at `https://localhost`, which
+  resolves to the container itself for the issuer and verifier.
 
 ## Commands
 

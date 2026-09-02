@@ -76,7 +76,10 @@ class WalletProviderAttestation(
                     "status" to mapOf(
                         "status_list" to mapOf("idx" to status.index, "uri" to status.uri),
                     ),
-                    "exp" to expiry.epochSecond,
+                    // issuer.metadata.preferred-client-status-period is P31D, and the issuer
+                    // rejects anything shorter with InvalidClientStatusExpiration. This is
+                    // independent of the attestation's own, much shorter, lifetime.
+                    "exp" to now.plus(STATUS_VALIDITY).epochSecond,
                 ),
             )
             .build()

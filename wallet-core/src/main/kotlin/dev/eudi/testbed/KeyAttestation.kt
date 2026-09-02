@@ -11,6 +11,16 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
 /**
+ * How long a status reference must stay valid.
+ *
+ * Both the issuer and its authorisation server require a status entry to outlive a
+ * "preferred status period" of 31 days: the issuer checks
+ * `keyStorageStatus.exp >= now + preferredKeyStorageStatusPeriod` and rejects a shorter
+ * one with InvalidClientStatusExpiration. The extra day is margin.
+ */
+val STATUS_VALIDITY: java.time.Duration = java.time.Duration.ofDays(32)
+
+/**
  * A status list entry, as handed out by the status list service.
  *
  * The reference issuer will not accept a key attestation without one: it dereferences

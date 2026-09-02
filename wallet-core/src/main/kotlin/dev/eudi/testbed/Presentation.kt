@@ -115,11 +115,16 @@ class PresentationService(
             val outcome = openId4Vp.dispatch(resolved, consensus, encryptionParameters = null)
             sink.step(flowId, "Verifier responded: $outcome", actor = "verifier")
 
+            // A rejected vp_token is a failed presentation. Reporting it as success
+            // because the exchange completed would hide exactly what we came to test.
+            val accepted = outcome !is DispatchOutcome.VerifierResponse.Rejected
+
             val walletResponse = verifier.walletResponse(client, flowId, transaction.transactionId)
 
             PresentationResult(
                 flowId = flowId,
-                status = "presented",
+                status = if (accepted) "presented" else "rejected",
+                error = if (accepted) null else "The verifier rejected the vp_token; see the protocol log for its reason",
                 transactionId = transaction.transactionId,
                 authorizationRequestUri = requestUri,
                 requestedClaims = requestedPaths.map { it.toString() },

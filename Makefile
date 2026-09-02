@@ -16,6 +16,7 @@ COMPOSE := $(DOCKER) compose
 
 # Kept in step with .env, used for the host-side source download.
 STATUS_LIST_VERSION := $(shell grep -E '^STATUS_LIST_VERSION=' .env | cut -d= -f2)
+CONSOLE_PORT := $(shell grep -E '^CONSOLE_PORT=' .env | cut -d= -f2)
 
 ISSUER_REPO   := https://github.com/eu-digital-identity-wallet/eudi-srv-pid-issuer.git
 VERIFIER_REPO := https://github.com/eu-digital-identity-wallet/eudi-srv-web-verifier-endpoint-23220-4-kt.git
@@ -40,16 +41,13 @@ vendor: ## clone/update the official EU reference implementations into ./vendor
 	done
 
 .PHONY: statuslist-src
-statuslist-src: config/status-list/app.zip config/status-list/get_status_list.py ## fetch the status list source archive on the host
+statuslist-src: config/status-list/app.zip ## fetch the status list source archive on the host
 
 config/status-list/app.zip:
 	@echo "==> fetching eudi-srv-statuslist-py $(STATUS_LIST_VERSION)"
 	@curl -sfL -o $@ \
 	  https://github.com/eu-digital-identity-wallet/eudi-srv-statuslist-py/archive/refs/tags/$(STATUS_LIST_VERSION).zip
 	@echo "    $@"
-
-config/status-list/get_status_list.py: vendor/eudi-srv-pid-issuer/docker-compose/status-list/endpoints/get_status_list.py
-	@cp $< $@
 
 .PHONY: certs
 certs: gateway/certs/localhost.tls.pem ## generate a self-signed certificate for the gateway
@@ -154,10 +152,21 @@ smoke: ## end-to-end check: issue a credential, then present it
 
 .PHONY: testbed
 testbed: ## run the wallet + console on the host (http://localhost:4000)
+	@if ss -ltn "( sport = :$(CONSOLE_PORT) )" 2>/dev/null | grep -q LISTEN; then \
+	  echo "Port $(CONSOLE_PORT) is already in use — a testbed is already running."; \
+	  echo "Stop it with 'make stop', or open http://localhost:$(CONSOLE_PORT) to use it."; \
+	  exit 1; \
+	fi
 	@echo "Starting the testbed. This stays in the foreground — Ctrl+C stops it."
-	@echo "Open http://localhost:4000 once you see 'listening' below."
+	@echo "Open http://localhost:$(CONSOLE_PORT) once you see 'listening' below."
 	@echo
 	cd wallet-core && ./gradlew run --console=plain -q
+
+.PHONY: stop
+stop: ## stop a running testbed (frees port 4000)
+	@pid=$$(ss -ltnp 2>/dev/null | awk '/:$(CONSOLE_PORT) /{match($$0,/pid=([0-9]+)/,m); print m[1]; exit}'); \
+	 if [ -n "$$pid" ]; then kill $$pid && echo "stopped testbed (pid $$pid)"; \
+	 else echo "no testbed running on port $(CONSOLE_PORT)"; fi
 
 .PHONY: build
 build: ## compile the wallet without running it

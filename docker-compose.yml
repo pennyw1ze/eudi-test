@@ -166,6 +166,14 @@ services:
       # is a SAN on the access certificate mounted below.
       VERIFIER_CLIENTIDPREFIX: x509_san_dns
       VERIFIER_ORIGINALCLIENTID: localhost
+      # Upstream ships these classifications empty, so the verifier cannot tell what kind
+      # of attestation a credential is and rejects every presentation with
+      # "Could not find Attestation Classification for vct '...'". These map the types the
+      # local issuer actually issues onto their PID / QEAA classifications.
+      VERIFIER_ATTESTATIONCLASSIFICATIONS_PID_VCTS_0: urn:eudi:pid:1
+      VERIFIER_ATTESTATIONCLASSIFICATIONS_PID_DOCTYPES_0: eu.europa.ec.eudi.pid.1
+      VERIFIER_ATTESTATIONCLASSIFICATIONS_QEAA_DOCTYPES_0: org.iso.18013.5.1.mDL
+      VERIFIER_ATTESTATIONCLASSIFICATIONS_QEAA_VCTS_0: urn:eu.europa.ec.eudi:learning:credential:1
       VERIFIER_ACCESS_CERTIFICATE_SIGNING_ALGORITHM: ES512
       VERIFIER_ACCESS_CERTIFICATE_KEYSTORE: file:///certs/keystore.jks
       VERIFIER_ACCESS_CERTIFICATE_KEYSTORE_TYPE: jks

@@ -115,7 +115,9 @@ class WalletKeys(
                             "uri" to keyStorageStatus.uri,
                         ),
                     ),
-                    "exp" to expiry.epochSecond,
+                    // Must outlive the issuer's preferred key storage status period, which
+                    // is far longer than the attestation itself lives.
+                    "exp" to now.plus(STATUS_VALIDITY).epochSecond,
                 ),
             )
             .apply { if (nonce != null) claim("nonce", nonce) }
