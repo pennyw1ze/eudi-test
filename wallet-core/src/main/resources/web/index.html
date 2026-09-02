@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EUDI Testbed</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #14181f; --muted: #5d6b7a;
+    --line: #dfe4ea; --accent: #1d4ed8; --ok: #0f7b4f; --bad: #b42318;
+    --issuer: #7b3fb8; --as: #b06d00; --verifier: #0f7b6c; --wallet: #1d4ed8;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1216; --panel:#161b22; --ink:#e6edf3; --muted:#8b98a5;
+            --line:#2a313a; --accent:#4d8bff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); background:var(--panel);
+           display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; letter-spacing:.01em; }
+  header .env { font:12px/1.4 var(--mono); color:var(--muted); }
+  main { display:grid; grid-template-columns: minmax(320px, 1fr) minmax(420px, 1.4fr);
+         gap:16px; padding:16px; align-items:start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  section > h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
+                 margin:0; padding:12px 14px; border-bottom:1px solid var(--line); }
+  .body { padding:14px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  button { font:inherit; padding:7px 13px; border-radius:7px; border:1px solid var(--accent);
+           background:var(--accent); color:#fff; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); }
+  button:disabled { opacity:.5; cursor:progress; }
+  select, input { font:inherit; padding:6px 9px; border-radius:7px; border:1px solid var(--line);
+                  background:var(--bg); color:var(--ink); }
+  ul { list-style:none; margin:0; padding:0; }
+  .cred { border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:8px; cursor:pointer; }
+  .cred:hover { border-color:var(--accent); }
+  .cred.sel { border-color:var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+  .cred b { font-weight:600; }
+  .cred small { color:var(--muted); font-family:var(--mono); font-size:11px; }
+  .empty { color:var(--muted); font-style:italic; }
+  pre { font:12px/1.55 var(--mono); background:var(--bg); border:1px solid var(--line);
+        border-radius:8px; padding:10px; overflow-x:auto; margin:0; max-height:420px; }
+  .log { max-height:560px; overflow-y:auto; }
+  .ev { border-bottom:1px solid var(--line); padding:9px 14px; }
+  .ev:last-child { border-bottom:0; }
+  .ev summary { cursor:pointer; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+  .tag { font:11px/1.4 var(--mono); padding:1px 6px; border-radius:4px; color:#fff; flex:none; }
+  .tag.issuer{background:var(--issuer)} .tag.authorization-server{background:var(--as)}
+  .tag.verifier{background:var(--verifier)} .tag.wallet{background:var(--wallet)}
+  .tag.other{background:var(--muted)}
+  .st { font:11px var(--mono); padding:1px 6px; border-radius:4px; border:1px solid var(--line); flex:none; }
+  .st.ok{color:var(--ok)} .st.bad{color:var(--bad)}
+  .u { font:12px var(--mono); color:var(--muted); word-break:break-all; }
+  .note { font-style:italic; }
+  .ev pre { margin-top:8px; max-height:260px; }
+  .err { color:var(--bad); }
+  .hint { color:var(--muted); font-size:12px; margin-top:8px; }
+  label { font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>EUDI Wallet Testbed</h1>
+  <span class="env" id="env">loading…</span>
+</header>
+
+<main>
+  <div style="display:flex; flex-direction:column; gap:16px;">
+    <section>
+      <h2>Issuance · OpenID4VCI</h2>
+      <div class="body">
+        <div class="row">
+          <label for="cfg">Credential</label>
+          <select id="cfg"><option>loading…</option></select>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <button id="issue">Issue to wallet</button>
+          <button id="issueBrowser" class="ghost">Issue via browser login</button>
+        </div>
+        <div class="hint" id="issueHint">
+          Headless issuance logs in as the sample realm user. “Via browser” opens the real
+          Keycloak login instead.
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Wallet · held credentials</h2>
+      <div class="body">
+        <ul id="creds"><li class="empty">No credentials yet.</li></ul>
+        <div class="row" style="margin-top:8px;">
+          <button id="clear" class="ghost">Clear wallet</button>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Presentation · OpenID4VP</h2>
+      <div class="body">
+        <div class="row">
+          <button id="present">Present selected credential</button>
+        </div>
+        <div class="hint">
+          The testbed acts as the relying party: it opens a transaction on the verifier,
+          the wallet answers it, then it reads the result back.
+        </div>
+        <div id="vpOut"></div>
+      </div>
+    </section>
+  </div>
+
+  <div style="display:flex; flex-direction:column; gap:16px;">
+    <section>
+      <h2>Protocol log</h2>
+      <div class="row" style="padding:10px 14px 0;">
+        <button id="clearLog" class="ghost">Clear view</button>
+        <label><input type="checkbox" id="follow" checked> follow</label>
+      </div>
+      <div class="log" id="log"><div class="ev empty" style="padding:14px;">Nothing yet.</div></div>
+    </section>
+
+    <section>
+      <h2>Credential inspector</h2>
+      <div class="body">
+        <div id="inspect" class="empty">Select a credential to decode it.</div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let cursor = 0, selected = null, events = [];
+
+const api = async (path, options) => {
+  const response = await fetch('/api' + path, options);
+  const text = await response.text();
+  try { return JSON.parse(text); } catch { return { error: text }; }
+};
+const postJson = (path, body) => api(path, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body || {}),
+});
+
+// ------------------------------------------------------------------ environment
+
+api('/config').then((config) => {
+  $('env').textContent = `issuer ${config.issuerBase}  ·  verifier ${config.verifierBase}  ·  user ${config.autoLoginUser}`;
+});
+
+api('/catalogue').then((result) => {
+  const select = $('cfg');
+  select.innerHTML = '';
+  let preferred = null;
+  if (result.error || !result.configurations?.length) {
+    select.innerHTML = '<option value="">— issuer unreachable —</option>';
+    $('issueHint').innerHTML = `<span class="err">Could not read issuer metadata: ${result.error || 'no configurations'}</span>`;
+    return;
+  }
+  for (const id of result.configurations) {
+    const option = document.createElement('option');
+    option.value = option.textContent = id;
+    // Prefer the plain SD-JWT VC PID: it is the one the presentation flow can present,
+    // and the '_deferred' variants would park issuance on the deferred endpoint.
+    if ((id.includes('sd_jwt') || id.includes('sd-jwt')) && !id.endsWith('_deferred')) {
+      preferred = preferred || id;
+    }
+    select.append(option);
+  }
+  if (preferred) select.value = preferred;
+});
+
+// -------------------------------------------------------------------- issuance
+
+const runIssuance = async (autoLogin) => {
+  const button = autoLogin ? $('issue') : $('issueBrowser');
+  button.disabled = true;
+  try {
+    const result = await postJson('/issue', {
+      credentialConfigurationId: $('cfg').value,
+      autoLogin,
+    });
+    if (result.status === 'awaiting-authorization' && result.authorizationUrl) {
+      window.open(result.authorizationUrl, '_blank');
+    }
+    if (result.error) $('issueHint').innerHTML = `<span class="err">${result.error}</span>`;
+    await refreshCredentials();
+  } finally {
+    button.disabled = false;
+  }
+};
+$('issue').onclick = () => runIssuance(true);
+$('issueBrowser').onclick = () => runIssuance(false);
+
+// ------------------------------------------------------------------ credentials
+
+const refreshCredentials = async () => {
+  const credentials = await api('/credentials');
+  const list = $('creds');
+  if (!Array.isArray(credentials) || !credentials.length) {
+    list.innerHTML = '<li class="empty">No credentials yet.</li>';
+    return;
+  }
+  list.innerHTML = '';
+  for (const credential of credentials) {
+    const item = document.createElement('li');
+    item.className = 'cred' + (credential.id === selected ? ' sel' : '');
+    item.innerHTML = `<b>${credential.configurationId}</b><br>
+      <small>${credential.format} · ${new Date(credential.issuedAt).toLocaleTimeString()}</small>`;
+    item.onclick = () => { selected = credential.id; refreshCredentials(); inspect(credential.id); };
+    list.append(item);
+  }
+};
+
+const inspect = async (id) => {
+  const decoded = await api('/credentials/' + id);
+  $('inspect').className = '';
+  $('inspect').innerHTML = `<pre>${JSON.stringify(decoded, null, 2)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`;
+};
+
+$('clear').onclick = async () => {
+  await postJson('/credentials/clear');
+  selected = null;
+  $('inspect').className = 'empty';
+  $('inspect').textContent = 'Select a credential to decode it.';
+  refreshCredentials();
+};
+
+// ----------------------------------------------------------------- presentation
+
+$('present').onclick = async () => {
+  $('present').disabled = true;
+  $('vpOut').innerHTML = '';
+  try {
+    const result = await postJson('/present', selected ? { credentialId: selected } : {});
+    $('vpOut').innerHTML = result.error
+      ? `<pre class="err">${result.error}</pre>`
+      : `<pre>${JSON.stringify(result, null, 2).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`;
+  } finally {
+    $('present').disabled = false;
+  }
+};
+
+// ------------------------------------------------------------------- trace log
+
+const escape = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+const pretty = (body) => {
+  if (!body) return '';
+  try { return JSON.stringify(JSON.parse(body), null, 2); } catch { return body; }
+};
+
+const render = (event) => {
+  const node = document.createElement('details');
+  node.className = 'ev';
+  const status = event.status
+    ? `<span class="st ${event.status < 400 ? 'ok' : 'bad'}">${event.status}</span>` : '';
+  const timing = event.durationMs != null ? `<span class="st">${event.durationMs}ms</span>` : '';
+
+  if (event.kind === 'http') {
+    node.innerHTML = `<summary>
+        <span class="tag ${event.actor}">${event.actor}</span>
+        <b>${event.method}</b> ${status} ${timing}
+        <span class="u">${escape(event.url)}</span>
+      </summary>
+      <pre>${escape(
+        '── request headers ──\n' + JSON.stringify(event.requestHeaders || {}, null, 2) +
+        (event.requestBody ? '\n\n── request body ──\n' + pretty(event.requestBody) : '') +
+        '\n\n── response headers ──\n' + JSON.stringify(event.responseHeaders || {}, null, 2) +
+        (event.responseBody ? '\n\n── response body ──\n' + pretty(event.responseBody) : '')
+      )}</pre>`;
+  } else {
+    const cls = event.kind === 'error' ? ' err' : '';
+    node.innerHTML = `<summary>
+        <span class="tag ${event.actor}">${event.actor}</span>
+        <span class="note${cls}">${escape(event.note || '')}</span>
+      </summary>
+      <pre>${escape(event.at)} · flow ${escape(event.flowId)}</pre>`;
+  }
+  return node;
+};
+
+const poll = async () => {
+  const batch = await api('/trace?since=' + cursor);
+  if (Array.isArray(batch) && batch.length) {
+    const log = $('log');
+    if (!events.length) log.innerHTML = '';
+    for (const event of batch) {
+      cursor = Math.max(cursor, event.seq);
+      events.push(event);
+      log.append(render(event));
+    }
+    if ($('follow').checked) log.scrollTop = log.scrollHeight;
+  }
+};
+
+$('clearLog').onclick = () => {
+  events = [];
+  $('log').innerHTML = '<div class="ev empty" style="padding:14px;">Nothing yet.</div>';
+};
+
+setInterval(poll, 800);
+refreshCredentials();
+</script>
+</body>
+</html>

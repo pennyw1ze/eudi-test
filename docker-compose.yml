@@ -1,0 +1,181 @@
+# EUDI testbed - official EU reference implementations only.
+#
+# This file does not fork or patch upstream: it consumes the published GHCR
+# images and the build contexts / config assets that ship inside the upstream
+# repositories, which `make vendor` clones into ./vendor.
+#
+# Everything is exposed through one gateway origin (https://localhost) so the
+# software wallet can follow metadata URLs verbatim:
+#
+#   https://localhost/idp                 authorisation server (Keycloak)
+#   https://localhost/pid-issuer          credential issuer      (OpenID4VCI)
+#   https://localhost/token_status_list   revocation status lists
+#   https://localhost/verifier            verifier endpoint      (OpenID4VP)
+#   https://localhost/                    verifier web UI
+#
+# Profiles let you run only what you need, which matters on a memory-tight host:
+#   docker compose --profile issuer up -d
+#   docker compose --profile verifier up -d
+#   docker compose --profile issuer --profile verifier up -d
+
+name: eudi-testbed
+
+networks:
+  eudi:
+    driver: bridge
+
+volumes:
+  postgres:
+  status-lists:
+  status-lists-backups:
+
+services:
+
+  # =====================================================================
+  # gateway - TLS termination + single-origin routing for the whole stack
+  # =====================================================================
+  gateway:
+    image: haproxy:2.8.3
+    container_name: eudi-gateway
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./gateway/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./gateway/certs:/etc/ssl/certs:ro
+    networks:
+      eudi:
+        aliases:
+          - localhost.gateway
+    restart: unless-stopped
+
+  # =====================================================================
+  # ISSUER SIDE - eudi-srv-pid-issuer + Keycloak + status list + postgres
+  # =====================================================================
+  postgres:
+    profiles: ["issuer"]
+    image: postgres:18.4-alpine3.24
+    container_name: eudi-postgres
+    environment:
+      POSTGRES_DB: pid_issuer
+      POSTGRES_USER: pid_issuer
+      POSTGRES_PASSWORD: pid_issuer
+    volumes:
+      - ./vendor/eudi-srv-pid-issuer/docker-compose/postgresql/schema:/docker-entrypoint-initdb.d:ro
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pid_issuer -d pid_issuer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [eudi]
+
+  keycloak:
+    profiles: ["issuer"]
+    build:
+      context: ./vendor/eudi-srv-pid-issuer/docker-compose/keycloak
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${KEYCLOAK_ABCA_EXTENSION_VERSION}
+    image: keycloak-abca:${KEYCLOAK_ABCA_EXTENSION_VERSION}
+    container_name: eudi-keycloak
+    command: ["start-dev", "--import-realm", "--features=dpop,passkeys"]
+    environment:
+      JAVA_OPTS_APPEND: ${KEYCLOAK_HEAP}
+      KC_PROXY_HEADERS: forwarded
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_RELATIVE_PATH: /idp
+      KC_HOSTNAME: ${PUBLIC_ORIGIN}/idp
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTPS_CERTIFICATE_FILE: /etc/ssl/certs/keycloak.tls.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /etc/ssl/certs/keycloak.tls.key
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: password
+    volumes:
+      - ./vendor/eudi-srv-pid-issuer/docker-compose/keycloak/realms/:/opt/keycloak/data/import
+      - ./vendor/eudi-srv-pid-issuer/docker-compose/keycloak/certs/:/etc/ssl/certs/
+      - ./vendor/eudi-srv-pid-issuer/docker-compose/keycloak/conf/keycloak.conf:/opt/keycloak/conf/keycloak.conf
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "{ printf 'HEAD /idp/health/ready HTTP/1.0\r\n\r\n' >&0; grep 'HTTP/1.0 200'; } 0<>/dev/tcp/localhost/9000"
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_interval: 30s
+      start_period: 60s
+    networks: [eudi]
+
+  status-list:
+    profiles: ["issuer"]
+    build:
+      # Our context, not the vendored one: see config/status-list/Dockerfile for why.
+      context: ./config/status-list
+      dockerfile: Dockerfile
+    image: status-list:${STATUS_LIST_VERSION}
+    container_name: eudi-status-list
+    environment:
+      API_key: aaa-bbb-ccc
+    volumes:
+      # our copy: upstream's hands out https://localhost/... URIs, unreachable from containers
+      - ./config/status-list/config_service.py:/status-list/app/config_service.py
+      - ./vendor/eudi-srv-pid-issuer/docker-compose/status-list/certs:/status-list/certs
+      - status-lists:/var/opt/status_lists
+      - status-lists-backups:/var/opt/status_list_backup
+    networks: [eudi]
+
+  pid-issuer:
+    profiles: ["issuer"]
+    image: ${PID_ISSUER_IMAGE}
+    pull_policy: missing
+    container_name: eudi-pid-issuer
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      status-list:
+        condition: service_started
+    volumes:
+      - ./vendor/eudi-srv-pid-issuer/docker-compose/pid-issuer/issuer-keys.jks:/issuer-keys.jks:ro
+    env_file:
+      - ./config/pid-issuer.env
+    environment:
+      JAVA_TOOL_OPTIONS: ${ISSUER_HEAP}
+      ISSUER_PUBLICURL: ${PUBLIC_ORIGIN}/pid-issuer
+      ISSUER_AUTHORIZATIONSERVER_PUBLICURL: ${PUBLIC_ORIGIN}/idp/realms/pid-issuer-realm
+    networks: [eudi]
+
+  # =====================================================================
+  # VERIFIER SIDE - eudi-srv-web-verifier-endpoint-23220-4-kt + web UI
+  # =====================================================================
+  verifier-backend:
+    profiles: ["verifier"]
+    image: ${VERIFIER_IMAGE}
+    pull_policy: missing
+    container_name: eudi-verifier-backend
+    environment:
+      JAVA_TOOL_OPTIONS: ${VERIFIER_HEAP}
+      # mounted under /verifier on the shared origin
+      SPRING_WEBFLUX_BASEPATH: /verifier
+      VERIFIER_PUBLICURL: ${PUBLIC_ORIGIN}/verifier
+      VERIFIER_DEFAULTHTTPRESPONSEMODE: DirectPost
+      VERIFIER_ACCESS_CERTIFICATE_SIGNING_ALGORITHM: ES512
+      VERIFIER_ACCESS_CERTIFICATE_KEYSTORE: file:///certs/keystore.jks
+      VERIFIER_ACCESS_CERTIFICATE_KEYSTORE_TYPE: jks
+      VERIFIER_ACCESS_CERTIFICATE_KEYSTORE_PASSWORD: keystore
+      VERIFIER_ACCESS_CERTIFICATE_ALIAS: access_certificate
+      VERIFIER_ACCESS_CERTIFICATE_PASSWORD: access_certificate
+    volumes:
+      - ./vendor/eudi-srv-web-verifier-endpoint-23220-4-kt/docker/keystore.jks:/certs/keystore.jks:ro
+    networks: [eudi]
+
+  verifier-ui:
+    profiles: ["verifier"]
+    image: ${VERIFIER_UI_IMAGE}
+    pull_policy: missing
+    container_name: eudi-verifier-ui
+    environment:
+      DOMAIN_NAME: ""
+      HOST_API: ${PUBLIC_ORIGIN}/verifier
+    networks: [eudi]

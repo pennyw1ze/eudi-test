@@ -1,0 +1,25 @@
+# vendored official EU reference implementations (cloned by `make vendor`)
+/vendor/
+
+# build output
+build/
+.gradle/
+node_modules/
+dist/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# runtime state
+/runs/
+*.log
+.env.local
+
+# editors
+.idea/
+.vscode/
+*.swp
+gateway/certs/
+config/status-list/app.zip
+config/status-list/get_status_list.py
+diag.txt

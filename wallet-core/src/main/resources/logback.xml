@@ -1,0 +1,17 @@
+<configuration>
+    <!-- Keep the console readable: the protocol log in the UI is the real record,
+         so the terminal only needs startup lines and warnings. -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss} %-5level %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+
+    <logger name="io.netty" level="WARN"/>
+    <logger name="io.ktor" level="INFO"/>
+    <logger name="okhttp3" level="WARN"/>
+</configuration>
