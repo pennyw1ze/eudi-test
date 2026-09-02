@@ -29,6 +29,12 @@ class VerifierDriver(private val sink: TraceSink) {
         flowId: String,
         dcqlQuery: JsonObject,
         nonce: String,
+        /**
+         * Names one of the verifier's configured Wallet Relying Party Intended Uses,
+         * whose registration certificate is attached to the request. The reference
+         * verifier refuses a transaction without one ("MissingRegistrationCertificate").
+         */
+        intendedUseId: String = Env.verifierIntendedUseId,
     ): InitTransactionResponse {
         sink.step(flowId, "Relying party opens a presentation transaction", actor = "verifier")
 
@@ -43,6 +49,7 @@ class VerifierDriver(private val sink: TraceSink) {
                     put("request_uri_method", "get")
                     put("response_mode", "direct_post")
                     put("profile", "openid4vp")
+                    put("intended_use_id", intendedUseId)
                 },
             )
         }
@@ -51,6 +58,12 @@ class VerifierDriver(private val sink: TraceSink) {
         }
         return response.body()
     }
+
+    /** The intended uses the verifier has configured, each with its registration certificate. */
+    suspend fun intendedUses(client: HttpClient): String =
+        client.get("${'$'}{Env.verifierBase}/ui/intended-uses") {
+            accept(ContentType.Application.Json)
+        }.bodyAsText()
 
     /** What the verifier made of the wallet's response. */
     suspend fun walletResponse(

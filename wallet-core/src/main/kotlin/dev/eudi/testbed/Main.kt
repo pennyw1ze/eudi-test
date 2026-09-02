@@ -19,6 +19,7 @@ private val keys = WalletKeys()
 private val verifierDriver = VerifierDriver(sink)
 private val issuanceService = IssuanceService(sink, store, keys)
 private val presentationService = PresentationService(sink, store, keys, verifierDriver)
+private val statusService = StatusService()
 
 fun main() {
     println()
@@ -28,7 +29,13 @@ fun main() {
     println()
     println("  This process stays running. Ctrl+C to stop it.")
     println()
-    embeddedServer(Netty, port = Env.port, host = "0.0.0.0", module = Application::testbed).start(wait = true)
+    try {
+        embeddedServer(Netty, port = Env.port, host = "0.0.0.0", module = Application::testbed).start(wait = true)
+    } catch (alreadyBound: java.net.BindException) {
+        System.err.println("Port ${Env.port} is already in use — another testbed is probably running.")
+        System.err.println("Stop it, or start this one on a different port with TESTBED_PORT=4001 make testbed")
+        kotlin.system.exitProcess(1)
+    }
 }
 
 fun Application.testbed() {
@@ -77,6 +84,85 @@ fun Application.testbed() {
                         )
                     },
                 )
+            }
+
+            /** Reachability of every participant, for the console's status strip. */
+            get("/status") {
+                call.respond(statusService.snapshot())
+            }
+
+            get("/issuer/metadata") {
+                val metadata = runCatching { statusService.issuerMetadata() }
+                metadata.fold(
+                    onSuccess = { call.respondText(it, ContentType.Application.Json) },
+                    onFailure = {
+                        call.respond(
+                            HttpStatusCode.BadGateway,
+                            buildJsonObject { put("error", it.message ?: it.toString()) },
+                        )
+                    },
+                )
+            }
+
+            // ------------------------------------------------------------ verifier
+
+            /**
+             * Opens a presentation transaction without waiting for the wallet, so the
+             * verifier panel can show the request and hand it to a phone by QR code.
+             */
+            post("/verifier/transaction") {
+                val body = runCatching { call.receive<JsonObject>() }.getOrElse { buildJsonObject { } }
+                val query = body["dcqlQuery"] as? JsonObject ?: VerifierDriver.defaultDcqlQuery()
+                val flowId = "vrf-" + java.util.UUID.randomUUID().toString().take(8)
+                val client = tracedHttpClient(flowId, sink)
+                try {
+                    val nonce = java.util.UUID.randomUUID().toString()
+                    val transaction = verifierDriver.initTransaction(client, flowId, query, nonce)
+                    call.respond(
+                        buildJsonObject {
+                            put("flowId", flowId)
+                            put("transactionId", transaction.transactionId)
+                            put("clientId", transaction.clientId)
+                            put("requestUri", transaction.requestUri)
+                            put("authorizationRequestUri", verifierDriver.authorizationRequestUri(transaction))
+                        },
+                    )
+                } catch (failure: Exception) {
+                    sink.error(flowId, failure.message ?: failure.toString())
+                    call.respond(
+                        HttpStatusCode.BadGateway,
+                        buildJsonObject { put("error", failure.message ?: failure.toString()) },
+                    )
+                } finally {
+                    client.close()
+                }
+            }
+
+            /** The intended uses the verifier offers, for the verifier panel's picker. */
+            get("/verifier/intended-uses") {
+                val client = plainHttpClient()
+                try {
+                    call.respondText(verifierDriver.intendedUses(client), ContentType.Application.Json)
+                } catch (failure: Exception) {
+                    call.respond(
+                        HttpStatusCode.BadGateway,
+                        buildJsonObject { put("error", failure.message ?: failure.toString()) },
+                    )
+                } finally {
+                    client.close()
+                }
+            }
+
+            /** Whatever the verifier has received for a transaction so far. */
+            get("/verifier/transaction/{id}") {
+                val id = call.parameters["id"] ?: ""
+                val flowId = "vrf-read"
+                val client = tracedHttpClient(flowId, sink)
+                try {
+                    call.respond(verifierDriver.walletResponse(client, flowId, id))
+                } finally {
+                    client.close()
+                }
             }
 
             // ---------------------------------------------------------- issuance

@@ -22,7 +22,12 @@ object Env {
      */
     val trustAllTls: Boolean = (env("TRUST_ALL_TLS") ?: "true").toBoolean()
 
-    val walletClientId: String = env("WALLET_CLIENT_ID") ?: "wallet-dev"
+    /**
+     * The realm's attestation-based client. `wallet-dev` is a plain public client, and
+     * the issuer's credential endpoint rejects tokens obtained that way because they
+     * carry no client_status claim.
+     */
+    val walletClientId: String = env("WALLET_CLIENT_ID") ?: "eudiw-abca"
 
     /**
      * Where the authorisation server sends the user back after login.
@@ -55,4 +60,10 @@ object Env {
      */
     val statusListApiKey: String = env("STATUS_LIST_API_KEY") ?: "aaa-bbb-ccc"
     val statusListCountry: String = env("STATUS_LIST_COUNTRY") ?: "FC"
+
+    /**
+     * Which of the verifier's configured intended uses to present under. The reference
+     * verifier ships one, id "1" ("Person identification").
+     */
+    val verifierIntendedUseId: String = env("VERIFIER_INTENDED_USE_ID") ?: "1"
 }

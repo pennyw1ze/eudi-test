@@ -26,14 +26,18 @@ data class KeyStorageStatusEntry(val index: Int, val uri: String)
  */
 class KeyStorageStatusProvider(private val sink: TraceSink) {
 
-    suspend fun take(client: HttpClient, flowId: String): KeyStorageStatusEntry {
-        sink.step(flowId, "Taking a status list entry for the key attestation", actor = "issuer")
+    suspend fun take(
+        client: HttpClient,
+        flowId: String,
+        doctype: String = "key-attestation+jwt",
+    ): KeyStorageStatusEntry {
+        sink.step(flowId, "Taking a status list entry for '$doctype'", actor = "issuer")
 
         val expiry = LocalDate.now().plusYears(1).format(DateTimeFormatter.ISO_LOCAL_DATE)
         val response = client.submitForm(
             url = "${Env.publicOrigin}/token_status_list/take",
             formParameters = parameters {
-                append("doctype", "key-attestation+jwt")
+                append("doctype", doctype)
                 append("country", Env.statusListCountry)
                 append("expiry_date", expiry)
             },

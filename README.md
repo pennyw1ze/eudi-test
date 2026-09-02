@@ -1,132 +1,137 @@
 # EUDI Wallet Testbed
 
-A local, self-contained environment for exercising and **tracking** the three roles of the
-EUropean Digital Identity (EUDI) Wallet ecosystem — **Issuer**, **Wallet (holder)** and
-**Verifier** — end to end on one machine.
+A local environment for exercising and tracking the three roles of the EUropean Digital
+Identity (EUDI) Wallet ecosystem — **Issuer**, **Wallet**, **Verifier** — from one web
+console at `http://localhost:4000`.
 
-Every protocol participant here is the official EU reference implementation. Nothing is
-reimplemented or forked; this repository is the harness around them: a shared gateway, a
-software wallet built on the official wallet libraries, and a console that records what
-actually happened on the wire.
-
-## What you get
+Every protocol participant is the official EU reference implementation. This repository
+is the harness around them: a shared gateway, a software wallet built on the official
+wallet libraries, and a console that records what happened on the wire.
 
 | Role | Implementation | Runs as |
 |---|---|---|
-| Credential Issuer (OpenID4VCI) | [`eudi-srv-pid-issuer`](https://github.com/eu-digital-identity-wallet/eudi-srv-pid-issuer) | container |
-| Authorisation Server | Keycloak + the upstream `pid-issuer-realm` | container |
-| Revocation / status lists | [`eudi-srv-statuslist-py`](https://github.com/eu-digital-identity-wallet/eudi-srv-statuslist-py) | container |
+| Issuer (OpenID4VCI) | [`eudi-srv-pid-issuer`](https://github.com/eu-digital-identity-wallet/eudi-srv-pid-issuer) | container |
+| Authorisation server | Keycloak + upstream `pid-issuer-realm` | container |
+| Revocation | [`eudi-srv-statuslist-py`](https://github.com/eu-digital-identity-wallet/eudi-srv-statuslist-py) | container |
 | Verifier (OpenID4VP) | [`eudi-srv-web-verifier-endpoint-23220-4-kt`](https://github.com/eu-digital-identity-wallet/eudi-srv-web-verifier-endpoint-23220-4-kt) | container |
-| Verifier web UI | [`eudi-web-verifier`](https://github.com/eu-digital-identity-wallet/eudi-web-verifier) | container |
-| **Wallet (holder)** | [`eudi-lib-jvm-openid4vci-kt`](https://github.com/eu-digital-identity-wallet/eudi-lib-jvm-openid4vci-kt), [`eudi-lib-jvm-openid4vp-kt`](https://github.com/eu-digital-identity-wallet/eudi-lib-jvm-openid4vp-kt), [`eudi-lib-jvm-sdjwt-kt`](https://github.com/eu-digital-identity-wallet/eudi-lib-jvm-sdjwt-kt) | host process |
+| Wallet (holder) | [`openid4vci-kt`](https://github.com/eu-digital-identity-wallet/eudi-lib-jvm-openid4vci-kt), [`openid4vp-kt`](https://github.com/eu-digital-identity-wallet/eudi-lib-jvm-openid4vp-kt), [`sdjwt-kt`](https://github.com/eu-digital-identity-wallet/eudi-lib-jvm-sdjwt-kt) | host process |
 | Console + tracing | this repository | same host process |
 
-The wallet is a real software holder driving the official libraries, not a mock. It runs on
-the host rather than in a container for one concrete reason: the issuer publishes its
-metadata under `https://localhost/...`, and inside a container `localhost` would resolve to
-the container itself rather than to the gateway.
-
-## Architecture
-
-```
-                     ┌──────────────────────────────────────────┐
-   browser ────────▶ │  testbed  :4000   console UI + wallet    │
-                     │  OpenID4VCI / OpenID4VP client           │
-                     │  protocol log · credential inspector     │
-                     └───────────────────┬──────────────────────┘
-                                         │  every request recorded
-                                         ▼
-                     ┌──────────────────────────────────────────┐
-                     │  gateway (haproxy)  https://localhost     │
-                     └───┬──────────┬──────────┬─────────────┬──┘
-                         │          │          │             │
-                  /pid-issuer     /idp   /token_status_list  /verifier
-                         │          │          │             │
-                   pid-issuer   keycloak  status-list   verifier-endpoint
-                         │                                   │
-                     postgres                            verifier-ui
-```
-
-Everything shares a single origin, `https://localhost`. That is what allows the wallet to
-follow the URLs it discovers in issuer and verifier metadata verbatim, exactly as a real
-wallet would.
+Everything is published under one origin, `https://localhost`, so the wallet can follow
+the URLs it discovers in metadata verbatim — as a real wallet would.
 
 ## Requirements
 
-- Docker with the daemon running, and your user in the `docker` group
-- JDK 17 or newer (21 recommended)
-- ~3 GB of free RAM (three JVMs plus Postgres)
+Docker, JDK 17+ (21 recommended), ~3 GB free RAM. Run `make doctor` to check.
 
-Run `make doctor` to have all of this checked for you.
-
-## Quick start
+## Start
 
 ```bash
-make doctor     # verify the host is ready
-make setup      # clone the upstream repos into ./vendor, generate the gateway certificate
-make up         # start issuer + verifier + gateway
-make testbed    # run the wallet and console on http://localhost:4000
+make doctor     # check the host
+make setup      # clone upstream repos, fetch sources, generate the gateway certificate
+make up         # start issuer + verifier + gateway (asks for sudo if needed)
+make testbed    # run the wallet + console — stays in the foreground
 ```
 
-Then open <http://localhost:4000> and press **Issue to wallet**, followed by
-**Present selected credential**.
+Open <http://localhost:4000>. The sidebar switches between the three roles and shows
+which services are reachable.
 
-To check the whole loop non-interactively, with the stack and the testbed both running:
+---
 
-```bash
-make smoke
+# Guide
+
+The console drives one credential through its whole life. The **Protocol log** at the
+bottom records every HTTP exchange as you go — expand any row to see headers and bodies.
+
+## 1. Issue a credential
+
+The wallet asks the issuer for a credential; the issuer authenticates the user, then
+signs and returns it. This is a single step in the UI — the signing happens issuer-side.
+
+**Wallet** tab → pick a **credential configuration** → **Issue to wallet**.
+
+- `eu.europa.ec.eudi.pid_vc_sd_jwt` — a PID as an SD-JWT VC (the one that can be presented)
+- `eu.europa.ec.eudi.pid_mso_mdoc` — a PID as an ISO mdoc
+- `org.iso.18013.5.1.mDL` — a mobile driving licence
+- `..._deferred` variants park on the deferred endpoint and are not supported
+
+**Issue to wallet** logs in headlessly as the sample realm user (`tneal`).
+**Via browser login** opens the real Keycloak login instead.
+
+Behind that button the wallet performs the full OpenID4VCI exchange: resolve issuer
+metadata, authenticate the client with a wallet-provider attestation, obtain a
+DPoP-bound access token, then request the credential with a JWT proof carrying a key
+attestation. The issuer signs the credential and the wallet stores it.
+
+## 2. Inspect what was signed
+
+Click the credential under **Held credentials**. The inspector decodes it rather than
+showing a blob:
+
+- **SD-JWT VC** — issuer-signed JWT header and payload, plus every disclosure unpacked
+  into its salt, claim name and value
+- **mdoc** — CBOR decoded, including the tag-24 wrapped `IssuerSignedItem`s
+
+This is where you confirm the issuer's signature and see exactly which claims it asserted.
+
+## 3. Verify it
+
+**Verifier** tab. The console acts as the relying party here.
+
+Edit the **DCQL query** to say which claims you want — the default asks for
+`family_name` and `given_name` from a PID. Then:
+
+- **Request & present** runs the whole loop: the verifier opens a transaction, the wallet
+  resolves the request, selects only the requested disclosures, signs a key-binding JWT
+  and posts the `vp_token`, and the verifier's verdict is read back.
+- **Open transaction only** stops after the request and shows the
+  `authorizationRequestUri`, so a real phone wallet can pick it up instead.
+
+Narrow the query to a single claim and present again — the inspector and log show only
+that claim being disclosed. That is selective disclosure working.
+
+---
+
+## Known issues
+
+- **Issuance fails at client authentication.** Keycloak rejects the testbed's client
+  attestation at the PAR endpoint with `"Authentication failed."` The reference issuer
+  accepts only attestation-based client authentication, and the testbed's self-signed
+  wallet-provider attestation is not yet accepted. Until this is resolved the wallet
+  cannot hold a credential, so steps 2 and 3 cannot complete. The Verifier tab can still
+  open transactions, and the Issuer tab shows the live issuer metadata.
+- **Presentation covers SD-JWT VC only.** Presenting an `mso_mdoc` needs a signed
+  `DeviceResponse` over a session transcript, which is not implemented. Such a request is
+  reported as unsupported. mdocs can still be issued, stored and inspected.
+- **TLS is not verified.** The gateway uses a self-signed certificate and the wallet is
+  configured to accept it. Local harness only.
+
+## Commands
+
 ```
-
-If memory is tight, bring the two sides up separately with `make up-issuer` and
-`make up-verifier`.
-
-## What "tracking" means here
-
-**Protocol log.** Every HTTP exchange the wallet makes is recorded, with full request and
-response headers and bodies, colour-coded by participant and grouped into flows. The
-recording sits in an OkHttp interceptor rather than in the EUDI libraries, so what you see
-is the traffic as it actually went out, not a re-narration of it.
-
-**Credential inspector.** Issued credentials are decoded rather than shown as opaque
-blobs: SD-JWT VC issuer JWTs with each disclosure unpacked into its salt / claim / value,
-and `mso_mdoc` credentials decoded from CBOR — including the tag-24 wrapped
-`IssuerSignedItem`s that would otherwise read as base64 noise.
+make doctor      check host prerequisites
+make setup       vendor upstream sources + certificate
+make up          start the stack        make down / make clean
+make testbed     run wallet + console
+make smoke       end-to-end check (needs both running)
+make logs        tail the stack         make logs S=pid-issuer
+make issuer-log  capture issuer.log + keycloak.log
+make diag        container states + logs to diag.txt
+```
 
 ## Layout
 
 ```
-docker-compose.yml   the official images and build contexts, wired to one origin
-config/              issuer configuration, lifted verbatim from upstream
-gateway/             haproxy config and the generated TLS certificate
-scripts/             doctor.sh (host check), smoke.sh (end-to-end check)
-vendor/              upstream repositories, cloned by `make vendor`, never patched
-wallet-core/         the software wallet, the tracer, and the console UI
+docker-compose.yml   official images and build contexts, wired to one origin
+config/              issuer env, status list config and Dockerfile
+gateway/             haproxy config + generated TLS certificate
+scripts/             doctor.sh, smoke.sh
+vendor/              upstream repositories (git-ignored, never patched)
+wallet-core/         the wallet, the tracer and the console UI
 ```
-
-`vendor/` is git-ignored. The testbed consumes upstream's published images and their
-config assets; it does not carry a copy of their source.
-
-## Notes and current limits
-
-- **Issuance requires a login.** The reference `pid-issuer` implements only the
-  authorization code grant, so every issuance involves a user authenticating at Keycloak.
-  The console does this headlessly with the sample realm user (`tneal`), which is the only
-  screen-scraping in the project; **Issue via browser login** performs the real redirect
-  instead.
-- **Presentation covers SD-JWT VC only.** Presenting an `mso_mdoc` credential requires
-  assembling a signed `DeviceResponse` over a session transcript, which is not implemented;
-  such a request is reported as unsupported rather than silently skipped. `mso_mdoc`
-  credentials can still be issued, stored and inspected.
-- **The wallet attests its own keys.** OpenID4VCI 1.0 requires a `key_attestation` in the
-  JWT proof, which a real wallet receives from its wallet provider. The testbed mints and
-  self-signs one.
-- **TLS is not verified.** The gateway uses a certificate it generated itself, and the
-  wallet is configured to accept it. This is a throwaway local harness; none of its
-  security settings are meant to travel.
 
 ## Sources
 
 - <https://github.com/eu-digital-identity-wallet>
 - <https://playground.eudi-wallet.dev/>
-- <https://issuer-backend.eudiw.dev/issuer/credentialsOffer/generate>
 - <https://verifier-backend.eudiw.dev/swagger-ui>

@@ -54,8 +54,26 @@ class IssuanceService(
 
     private val pending = ConcurrentHashMap<String, Pending>()
 
-    private val config = OpenId4VCIConfig(
-        clientId = Env.walletClientId,
+    /**
+     * Built per flow rather than once, because attestation-based client authentication
+     * needs the flow's traced HTTP client (to take a status list entry) and its flow id
+     * (so the exchange lands in the right timeline).
+     */
+    private fun configFor(client: HttpClient, flowId: String) = OpenId4VCIConfig(
+        // The reference issuer requires attestation-based client authentication: its
+        // credential endpoint reads client_status off the access token, and only the
+        // ABCA flow puts it there.
+        clientAuthentication = ClientAuthentication.AttestationBased(
+            id = Env.walletClientId,
+            provisionClientAttestation = WalletProviderAttestation(
+                keys = keys,
+                statusProvider = keyStorageStatus,
+                client = client,
+                flowId = flowId,
+                sink = sink,
+                clientId = Env.walletClientId,
+            ),
+        ),
         authFlowRedirectionURI = URI.create(Env.redirectUri),
         encryptionSupportConfig = EncryptionSupportConfig(
             ecKeyCurve = com.nimbusds.jose.jwk.Curve.P_256,
@@ -64,7 +82,6 @@ class IssuanceService(
         ),
         // The upstream realm runs Keycloak with the dpop feature on and the issuer sets
         // ISSUER_DPOP_REALM, so its token endpoint rejects requests without a DPoP proof.
-        // IfSupported means the wallet still works against an issuer that does not want one.
         dPoPUsage = DPoPUsage.IfSupported(
             DPoPConfig(
                 object : ProvisionDPoPSigner {
@@ -83,7 +100,7 @@ class IssuanceService(
         return try {
             sink.step(flowId, "Starting OpenID4VCI issuance")
 
-            val (issuer, warnings) = negotiate(flowId, request, client)
+            val (issuer, warnings) = negotiate(flowId, request, client, configFor(client, flowId))
             val configurationId = chooseConfiguration(issuer, request)
 
             sink.step(
@@ -175,6 +192,7 @@ class IssuanceService(
         flowId: String,
         request: IssuanceRequest,
         client: HttpClient,
+        config: OpenId4VCIConfig,
     ): IssuerNegotiationResult = when {
         request.offerUri != null -> {
             sink.step(flowId, "Resolving credential offer", actor = "issuer")

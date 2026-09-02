@@ -23,3 +23,5 @@ gateway/certs/
 config/status-list/app.zip
 config/status-list/get_status_list.py
 diag.txt
+issuer.log
+keycloak.log

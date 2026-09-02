@@ -160,6 +160,12 @@ services:
       SPRING_WEBFLUX_BASEPATH: /verifier
       VERIFIER_PUBLICURL: ${PUBLIC_ORIGIN}/verifier
       VERIFIER_DEFAULTHTTPRESPONSEMODE: DirectPost
+      # Upstream defaults to a pre-registered client id, which would require the wallet to
+      # be pre-loaded with the verifier's signing keys. x509_san_dns instead lets the wallet
+      # authenticate the request from the certificate chain in the request JWT. "localhost"
+      # is a SAN on the access certificate mounted below.
+      VERIFIER_CLIENTIDPREFIX: x509_san_dns
+      VERIFIER_ORIGINALCLIENTID: localhost
       VERIFIER_ACCESS_CERTIFICATE_SIGNING_ALGORITHM: ES512
       VERIFIER_ACCESS_CERTIFICATE_KEYSTORE: file:///certs/keystore.jks
       VERIFIER_ACCESS_CERTIFICATE_KEYSTORE_TYPE: jks

@@ -140,6 +140,12 @@ diag: ## dump container states and logs to diag.txt for troubleshooting
 	} > diag.txt 2>&1
 	@echo "    diag.txt written ($$(wc -l < diag.txt) lines)"
 
+.PHONY: issuer-log
+issuer-log: ## capture recent pid-issuer + keycloak logs for diagnosing failures
+	@$(COMPOSE) --profile issuer logs --tail=400 pid-issuer > issuer.log 2>&1
+	@$(COMPOSE) --profile issuer logs --tail=400 keycloak > keycloak.log 2>&1
+	@echo "    issuer.log ($$(wc -l < issuer.log) lines), keycloak.log ($$(wc -l < keycloak.log) lines)"
+
 .PHONY: smoke
 smoke: ## end-to-end check: issue a credential, then present it
 	@bash scripts/smoke.sh

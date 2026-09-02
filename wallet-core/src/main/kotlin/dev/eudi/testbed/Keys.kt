@@ -71,6 +71,8 @@ class WalletKeys(
     private val attestationKey: ECKey = generateKey("wallet-provider"),
     /** Binds access tokens to this wallet via DPoP; the sample realm requires it. */
     val dpopKey: ECKey = generateKey("dpop"),
+    /** The key the client attestation binds to, used to sign its proof of possession. */
+    val clientPopKey: ECKey = generateKey("client-pop"),
 ) {
 
     /**
@@ -80,7 +82,7 @@ class WalletKeys(
      * it logs "Trusting all Wallet Providers" and accepts any chain. It does insist the
      * chain is *present*, and reads the signing key from it.
      */
-    private val attestationCertificate: X509Certificate = selfSign(attestationKey)
+    val attestationCertificate: X509Certificate = selfSign(attestationKey)
 
     /**
      * Mints the key attestation that OpenID4VCI 1.0 requires in the `key_attestation`
@@ -129,6 +131,10 @@ class WalletKeys(
 
         return KeyAttestationJWT(jwt)
     }
+
+    /** Signs a client attestation as the wallet provider would. */
+    fun signAsWalletProvider(header: JWSHeader, claims: JWTClaimsSet): SignedJWT =
+        SignedJWT(header, claims).apply { sign(ECDSASigner(attestationKey)) }
 
     /** The signer the issuance flow hands to `ProofSpecification.JwtProof`. */
     fun proofSigner(nonce: String? = null, keyStorageStatus: KeyStorageStatusEntry): Signer<KeyAttestationJWT> =

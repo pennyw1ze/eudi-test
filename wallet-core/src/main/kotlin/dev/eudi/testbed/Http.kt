@@ -31,6 +31,24 @@ private val insecureTrustManager = object : X509TrustManager {
     override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
 }
 
+/** A client for health probes, deliberately untraced so it does not pollute the log. */
+fun plainHttpClient(): HttpClient = HttpClient(OkHttp) {
+    expectSuccess = false
+    followRedirects = false
+    engine {
+        if (Env.trustAllTls) {
+            config {
+                val sslContext = SSLContext.getInstance("TLS").apply {
+                    init(null, arrayOf(insecureTrustManager), SecureRandom())
+                }
+                sslSocketFactory(sslContext.socketFactory, insecureTrustManager)
+                hostnameVerifier { _, _ -> true }
+            }
+        }
+    }
+    install(ContentNegotiation) { json(lenientJson) }
+}
+
 /**
  * An HTTP client bound to a single flow, so every exchange it records is already
  * correlated. Flows are short-lived, so a client per flow is cheaper than threading

@@ -5,309 +5,521 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EUDI Testbed</title>
 <style>
-  :root {
-    --bg: #f6f7f9; --panel: #fff; --ink: #14181f; --muted: #5d6b7a;
-    --line: #dfe4ea; --accent: #1d4ed8; --ok: #0f7b4f; --bad: #b42318;
-    --issuer: #7b3fb8; --as: #b06d00; --verifier: #0f7b6c; --wallet: #1d4ed8;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+:root{
+  --bg:#eef1f5; --panel:#fff; --panel-2:#f7f9fb; --ink:#111827; --ink-2:#4b5563;
+  --muted:#6b7280; --line:#dde3ea; --line-2:#eaeff4;
+  --accent:#2557d6; --accent-ink:#fff; --accent-soft:#e8eefc;
+  --ok:#0b7a4b; --ok-soft:#e3f5ec; --bad:#b32318; --bad-soft:#fdeceb; --warn:#9a6700;
+  --issuer:#7134c4; --as:#a4610b; --verifier:#0d7c6d; --wallet:#2557d6;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --radius:10px; --sidebar:232px;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel-2:#1b2129; --ink:#e6edf3; --ink-2:#adbac7;
+    --muted:#8b949e; --line:#2a313a; --line-2:#232a33;
+    --accent:#4d8bff; --accent-soft:#16233d;
+    --ok:#3fb950; --ok-soft:#122119; --bad:#f85149; --bad-soft:#2a1416; --warn:#d29922;
+    --issuer:#b083f0; --as:#e3b341; --verifier:#39c5bb; --wallet:#4d8bff;
   }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#0f1216; --panel:#161b22; --ink:#e6edf3; --muted:#8b98a5;
-            --line:#2a313a; --accent:#4d8bff; }
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink);
-         font:14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
-  header { padding:16px 20px; border-bottom:1px solid var(--line); background:var(--panel);
-           display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; }
-  h1 { font-size:16px; margin:0; letter-spacing:.01em; }
-  header .env { font:12px/1.4 var(--mono); color:var(--muted); }
-  main { display:grid; grid-template-columns: minmax(320px, 1fr) minmax(420px, 1.4fr);
-         gap:16px; padding:16px; align-items:start; }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  section > h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
-                 margin:0; padding:12px 14px; border-bottom:1px solid var(--line); }
-  .body { padding:14px; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  button { font:inherit; padding:7px 13px; border-radius:7px; border:1px solid var(--accent);
-           background:var(--accent); color:#fff; cursor:pointer; }
-  button.ghost { background:transparent; color:var(--accent); }
-  button:disabled { opacity:.5; cursor:progress; }
-  select, input { font:inherit; padding:6px 9px; border-radius:7px; border:1px solid var(--line);
-                  background:var(--bg); color:var(--ink); }
-  ul { list-style:none; margin:0; padding:0; }
-  .cred { border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:8px; cursor:pointer; }
-  .cred:hover { border-color:var(--accent); }
-  .cred.sel { border-color:var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
-  .cred b { font-weight:600; }
-  .cred small { color:var(--muted); font-family:var(--mono); font-size:11px; }
-  .empty { color:var(--muted); font-style:italic; }
-  pre { font:12px/1.55 var(--mono); background:var(--bg); border:1px solid var(--line);
-        border-radius:8px; padding:10px; overflow-x:auto; margin:0; max-height:420px; }
-  .log { max-height:560px; overflow-y:auto; }
-  .ev { border-bottom:1px solid var(--line); padding:9px 14px; }
-  .ev:last-child { border-bottom:0; }
-  .ev summary { cursor:pointer; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
-  .tag { font:11px/1.4 var(--mono); padding:1px 6px; border-radius:4px; color:#fff; flex:none; }
-  .tag.issuer{background:var(--issuer)} .tag.authorization-server{background:var(--as)}
-  .tag.verifier{background:var(--verifier)} .tag.wallet{background:var(--wallet)}
-  .tag.other{background:var(--muted)}
-  .st { font:11px var(--mono); padding:1px 6px; border-radius:4px; border:1px solid var(--line); flex:none; }
-  .st.ok{color:var(--ok)} .st.bad{color:var(--bad)}
-  .u { font:12px var(--mono); color:var(--muted); word-break:break-all; }
-  .note { font-style:italic; }
-  .ev pre { margin-top:8px; max-height:260px; }
-  .err { color:var(--bad); }
-  .hint { color:var(--muted); font-size:12px; margin-top:8px; }
-  label { font-size:12px; color:var(--muted); }
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+button,select,input,textarea{font:inherit;color:inherit}
+
+/* ---------- shell ---------- */
+.app{display:grid;grid-template-columns:var(--sidebar) 1fr;height:100vh}
+
+/* ---------- sidebar ---------- */
+aside{background:var(--panel);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;min-height:0}
+.brand{padding:16px 18px 14px;border-bottom:1px solid var(--line)}
+.brand h1{margin:0;font-size:14px;font-weight:650;letter-spacing:.01em}
+.brand p{margin:2px 0 0;font-size:11px;color:var(--muted)}
+nav{padding:10px 8px;display:flex;flex-direction:column;gap:2px}
+.navitem{display:flex;gap:10px;align-items:center;padding:9px 11px;border-radius:8px;
+  border:0;background:transparent;text-align:left;cursor:pointer;width:100%}
+.navitem:hover{background:var(--panel-2)}
+.navitem[aria-current="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.navitem .dot{width:8px;height:8px;border-radius:50%;flex:none}
+.dot.issuer{background:var(--issuer)} .dot.wallet{background:var(--wallet)}
+.dot.verifier{background:var(--verifier)}
+.navitem small{margin-left:auto;font:11px var(--mono);color:var(--muted)}
+
+.health{margin-top:auto;border-top:1px solid var(--line);padding:12px 14px}
+.health h2{margin:0 0 8px;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.hrow{display:flex;align-items:center;gap:7px;padding:2px 0;font-size:12px}
+.hrow .led{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
+.hrow.up .led{background:var(--ok)} .hrow.down .led{background:var(--bad)}
+.hrow span:last-child{margin-left:auto;font:10px var(--mono);color:var(--muted)}
+
+/* ---------- main ---------- */
+main{display:grid;grid-template-rows:1fr minmax(180px,var(--logh,34vh));min-height:0;min-width:0}
+.stage{overflow-y:auto;padding:20px 22px;min-height:0}
+.stage-head{display:flex;align-items:flex-end;gap:14px;margin-bottom:16px;flex-wrap:wrap}
+.stage-head h2{margin:0;font-size:19px;font-weight:640;letter-spacing:-.01em}
+.stage-head p{margin:0;color:var(--muted);font-size:13px;flex:1 1 260px}
+
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));align-items:start}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.card > h3{margin:0;padding:11px 14px;font-size:11px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--muted);border-bottom:1px solid var(--line-2);display:flex;align-items:center;gap:8px}
+.card > h3 .count{margin-left:auto;font:11px var(--mono);color:var(--muted)}
+.card .in{padding:14px}
+.card.wide{grid-column:1/-1}
+
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
+.field label{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+select,input[type=text],textarea{padding:8px 10px;border:1px solid var(--line);border-radius:8px;
+  background:var(--panel-2);width:100%}
+textarea{font:12px/1.5 var(--mono);resize:vertical;min-height:130px}
+select:focus,input:focus,textarea:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+
+button.primary{background:var(--accent);color:var(--accent-ink);border:1px solid var(--accent);
+  padding:8px 15px;border-radius:8px;cursor:pointer;font-weight:550}
+button.ghost{background:transparent;color:var(--accent);border:1px solid var(--line);
+  padding:8px 15px;border-radius:8px;cursor:pointer}
+button.ghost:hover{border-color:var(--accent)}
+button:disabled{opacity:.5;cursor:progress}
+.hint{font-size:12px;color:var(--muted);margin-top:9px}
+.err{color:var(--bad)}
+
+pre{margin:0;font:12px/1.55 var(--mono);background:var(--panel-2);border:1px solid var(--line-2);
+  border-radius:8px;padding:11px;overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-word}
+.empty{color:var(--muted);font-style:italic;font-size:13px}
+
+ul.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px}
+.cred{border:1px solid var(--line);border-radius:9px;padding:10px 11px;cursor:pointer;background:var(--panel-2)}
+.cred:hover{border-color:var(--accent)}
+.cred[aria-selected="true"]{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent)}
+.cred b{font-weight:600;font-size:13px;word-break:break-all}
+.cred small{display:block;color:var(--muted);font:11px var(--mono);margin-top:3px}
+
+.badge{display:inline-block;padding:2px 7px;border-radius:20px;font-size:11px;font-weight:600}
+.badge.ok{background:var(--ok-soft);color:var(--ok)}
+.badge.bad{background:var(--bad-soft);color:var(--bad)}
+
+/* ---------- protocol log ---------- */
+.logwrap{border-top:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-height:0}
+.logbar{display:flex;align-items:center;gap:9px;padding:8px 14px;border-bottom:1px solid var(--line-2);flex-wrap:wrap}
+.logbar strong{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.logbar .sp{flex:1}
+.logbar label{font-size:12px;color:var(--ink-2);display:flex;align-items:center;gap:5px}
+.logbar select{width:auto;padding:4px 8px;font-size:12px}
+.log{overflow-y:auto;min-height:0;flex:1}
+details.ev{border-bottom:1px solid var(--line-2)}
+details.ev > summary{cursor:pointer;padding:7px 14px;display:flex;gap:9px;align-items:baseline;
+  flex-wrap:wrap;list-style:none}
+details.ev > summary::-webkit-details-marker{display:none}
+details.ev:hover > summary{background:var(--panel-2)}
+.tag{font:10px/1.5 var(--mono);padding:1px 6px;border-radius:4px;color:#fff;flex:none;text-transform:uppercase;letter-spacing:.03em}
+.tag.issuer{background:var(--issuer)} .tag.authorization-server{background:var(--as)}
+.tag.verifier{background:var(--verifier)} .tag.wallet{background:var(--wallet)} .tag.other{background:var(--muted)}
+.meth{font:11px var(--mono);font-weight:700}
+.code{font:11px var(--mono);padding:0 5px;border-radius:4px;border:1px solid var(--line)}
+.code.ok{color:var(--ok)} .code.bad{color:var(--bad)}
+.url{font:11px var(--mono);color:var(--muted);word-break:break-all;flex:1 1 200px}
+.note{font-size:12.5px}
+.note.bad{color:var(--bad)}
+details.ev pre{margin:0 14px 11px;max-height:300px}
+.t{font:10px var(--mono);color:var(--muted);flex:none}
 </style>
 </head>
 <body>
-<header>
-  <h1>EUDI Wallet Testbed</h1>
-  <span class="env" id="env">loading…</span>
-</header>
+<div class="app">
 
-<main>
-  <div style="display:flex; flex-direction:column; gap:16px;">
-    <section>
-      <h2>Issuance · OpenID4VCI</h2>
-      <div class="body">
-        <div class="row">
-          <label for="cfg">Credential</label>
-          <select id="cfg"><option>loading…</option></select>
+  <aside>
+    <div class="brand">
+      <h1>EUDI Testbed</h1>
+      <p id="origin">…</p>
+    </div>
+
+    <nav id="nav">
+      <button class="navitem" data-role="issuer"   aria-current="false"><i class="dot issuer"></i>Issuer</button>
+      <button class="navitem" data-role="wallet"   aria-current="true"><i class="dot wallet"></i>Wallet<small id="credCount"></small></button>
+      <button class="navitem" data-role="verifier" aria-current="false"><i class="dot verifier"></i>Verifier</button>
+    </nav>
+
+    <div class="health">
+      <h2>Services</h2>
+      <div id="health"><div class="hrow"><i class="led"></i>checking…</div></div>
+    </div>
+  </aside>
+
+  <main>
+    <!-- ============================ ISSUER ============================ -->
+    <section class="stage" id="stage-issuer" hidden>
+      <div class="stage-head">
+        <h2>Issuer</h2>
+        <p>The OpenID4VCI credential issuer and its authorisation server, as the wallet discovers them.</p>
+        <button class="ghost" id="reloadIssuer">Reload metadata</button>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h3>Credential configurations<span class="count" id="cfgCount"></span></h3>
+          <div class="in"><ul class="list" id="cfgList"><li class="empty">Loading…</li></ul></div>
         </div>
-        <div class="row" style="margin-top:10px;">
-          <button id="issue">Issue to wallet</button>
-          <button id="issueBrowser" class="ghost">Issue via browser login</button>
+        <div class="card">
+          <h3>Endpoints</h3>
+          <div class="in"><pre id="issuerEndpoints">…</pre></div>
         </div>
-        <div class="hint" id="issueHint">
-          Headless issuance logs in as the sample realm user. “Via browser” opens the real
-          Keycloak login instead.
+        <div class="card wide">
+          <h3>Issuer metadata</h3>
+          <div class="in"><pre id="issuerMeta">…</pre></div>
         </div>
       </div>
     </section>
 
-    <section>
-      <h2>Wallet · held credentials</h2>
-      <div class="body">
-        <ul id="creds"><li class="empty">No credentials yet.</li></ul>
-        <div class="row" style="margin-top:8px;">
-          <button id="clear" class="ghost">Clear wallet</button>
+    <!-- ============================ WALLET ============================ -->
+    <section class="stage" id="stage-wallet">
+      <div class="stage-head">
+        <h2>Wallet</h2>
+        <p>The holder. Requests credentials from the issuer and presents them to the verifier.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h3>Request a credential</h3>
+          <div class="in">
+            <div class="field">
+              <label for="cfg">Credential configuration</label>
+              <select id="cfg"><option>Loading…</option></select>
+            </div>
+            <div class="row">
+              <button class="primary" id="issue">Issue to wallet</button>
+              <button class="ghost" id="issueBrowser">Via browser login</button>
+            </div>
+            <div class="hint" id="issueHint">Headless issuance logs in as the sample realm user.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Held credentials<span class="count" id="credCount2"></span></h3>
+          <div class="in">
+            <ul class="list" id="creds"><li class="empty">No credentials yet.</li></ul>
+            <div class="row" style="margin-top:11px">
+              <button class="ghost" id="clear">Clear wallet</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card wide">
+          <h3>Credential inspector</h3>
+          <div class="in" id="inspect"><span class="empty">Select a credential to decode it.</span></div>
         </div>
       </div>
     </section>
 
-    <section>
-      <h2>Presentation · OpenID4VP</h2>
-      <div class="body">
-        <div class="row">
-          <button id="present">Present selected credential</button>
+    <!-- =========================== VERIFIER =========================== -->
+    <section class="stage" id="stage-verifier" hidden>
+      <div class="stage-head">
+        <h2>Verifier</h2>
+        <p>The relying party. Opens a presentation transaction and reads what the wallet returns.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h3>Presentation request (DCQL)</h3>
+          <div class="in">
+            <div class="field">
+              <label for="dcql">Query</label>
+              <textarea id="dcql" spellcheck="false"></textarea>
+            </div>
+            <div class="row">
+              <button class="primary" id="runLoop">Request &amp; present</button>
+              <button class="ghost" id="openTx">Open transaction only</button>
+              <button class="ghost" id="resetDcql">Reset query</button>
+            </div>
+            <div class="hint">
+              <strong>Request &amp; present</strong> runs the whole loop against the wallet.
+              <strong>Open transaction only</strong> stops after the request, so a phone wallet can pick it up.
+            </div>
+          </div>
         </div>
-        <div class="hint">
-          The testbed acts as the relying party: it opens a transaction on the verifier,
-          the wallet answers it, then it reads the result back.
+        <div class="card">
+          <h3>Result</h3>
+          <div class="in" id="vpOut"><span class="empty">Nothing yet.</span></div>
         </div>
-        <div id="vpOut"></div>
       </div>
     </section>
-  </div>
 
-  <div style="display:flex; flex-direction:column; gap:16px;">
-    <section>
-      <h2>Protocol log</h2>
-      <div class="row" style="padding:10px 14px 0;">
-        <button id="clearLog" class="ghost">Clear view</button>
+    <!-- =========================== LOG =========================== -->
+    <div class="logwrap">
+      <div class="logbar">
+        <strong>Protocol log</strong>
+        <label>Actor
+          <select id="filterActor">
+            <option value="">all</option>
+            <option value="issuer">issuer</option>
+            <option value="authorization-server">authorisation server</option>
+            <option value="verifier">verifier</option>
+            <option value="wallet">wallet</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="onlyHttp"> HTTP only</label>
+        <span class="sp"></span>
         <label><input type="checkbox" id="follow" checked> follow</label>
+        <button class="ghost" id="clearLog" style="padding:4px 10px">Clear</button>
       </div>
-      <div class="log" id="log"><div class="ev empty" style="padding:14px;">Nothing yet.</div></div>
-    </section>
-
-    <section>
-      <h2>Credential inspector</h2>
-      <div class="body">
-        <div id="inspect" class="empty">Select a credential to decode it.</div>
-      </div>
-    </section>
-  </div>
-</main>
+      <div class="log" id="log"><div style="padding:14px" class="empty">No traffic yet.</div></div>
+    </div>
+  </main>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-let cursor = 0, selected = null, events = [];
+const esc = (v) => String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
 
-const api = async (path, options) => {
-  const response = await fetch('/api' + path, options);
-  const text = await response.text();
-  try { return JSON.parse(text); } catch { return { error: text }; }
+const api = async (path, opts) => {
+  const r = await fetch('/api' + path, opts);
+  const t = await r.text();
+  try { return JSON.parse(t); } catch { return { error: t || ('HTTP ' + r.status) }; }
 };
-const postJson = (path, body) => api(path, {
-  method: 'POST',
-  headers: { 'content-type': 'application/json' },
-  body: JSON.stringify(body || {}),
+const post = (path, body) => api(path, {
+  method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body || {})
 });
 
-// ------------------------------------------------------------------ environment
+/* ---------------------------------------------------------- role switching */
+let role = 'wallet';
+const setRole = (next) => {
+  role = next;
+  for (const el of document.querySelectorAll('.navitem'))
+    el.setAttribute('aria-current', String(el.dataset.role === next));
+  for (const id of ['issuer','wallet','verifier'])
+    $('stage-' + id).hidden = (id !== next);
+  if (next === 'issuer') loadIssuer();
+};
+for (const el of document.querySelectorAll('.navitem'))
+  el.onclick = () => setRole(el.dataset.role);
 
-api('/config').then((config) => {
-  $('env').textContent = `issuer ${config.issuerBase}  ·  verifier ${config.verifierBase}  ·  user ${config.autoLoginUser}`;
+/* ---------------------------------------------------------------- services */
+const refreshHealth = async () => {
+  const rows = await api('/status');
+  if (!Array.isArray(rows)) return;
+  $('health').innerHTML = rows.map(r =>
+    `<div class="hrow ${r.state}" title="${esc(r.url)} — ${esc(r.detail)}">
+       <i class="led"></i>${esc(r.label)}<span>${esc(r.detail)}</span></div>`).join('');
+};
+
+api('/config').then(c => {
+  $('origin').textContent = c.publicOrigin + ' · user ' + c.autoLoginUser;
 });
 
-api('/catalogue').then((result) => {
-  const select = $('cfg');
-  select.innerHTML = '';
-  let preferred = null;
-  if (result.error || !result.configurations?.length) {
-    select.innerHTML = '<option value="">— issuer unreachable —</option>';
-    $('issueHint').innerHTML = `<span class="err">Could not read issuer metadata: ${result.error || 'no configurations'}</span>`;
+/* ------------------------------------------------------------------ issuer */
+let issuerLoaded = false;
+const loadIssuer = async () => {
+  if (issuerLoaded) return;
+  issuerLoaded = true;
+  const meta = await api('/issuer/metadata');
+  if (meta.error) {
+    $('issuerMeta').innerHTML = `<span class="err">${esc(meta.error)}</span>`;
+    $('cfgList').innerHTML = '<li class="empty">Issuer unreachable.</li>';
     return;
   }
-  for (const id of result.configurations) {
-    const option = document.createElement('option');
-    option.value = option.textContent = id;
-    // Prefer the plain SD-JWT VC PID: it is the one the presentation flow can present,
-    // and the '_deferred' variants would park issuance on the deferred endpoint.
-    if ((id.includes('sd_jwt') || id.includes('sd-jwt')) && !id.endsWith('_deferred')) {
-      preferred = preferred || id;
-    }
-    select.append(option);
+  $('issuerMeta').textContent = JSON.stringify(meta, null, 2);
+
+  const cfgs = meta.credential_configurations_supported || {};
+  const names = Object.keys(cfgs);
+  $('cfgCount').textContent = names.length + ' offered';
+  $('cfgList').innerHTML = names.map(n =>
+    `<li class="cred"><b>${esc(n)}</b><small>${esc(cfgs[n].format || '')}</small></li>`).join('')
+    || '<li class="empty">None advertised.</li>';
+
+  const eps = {
+    credential_issuer: meta.credential_issuer,
+    authorization_servers: meta.authorization_servers,
+    credential_endpoint: meta.credential_endpoint,
+    nonce_endpoint: meta.nonce_endpoint,
+    deferred_credential_endpoint: meta.deferred_credential_endpoint,
+    notification_endpoint: meta.notification_endpoint,
+    batch_credential_issuance: meta.batch_credential_issuance,
+  };
+  $('issuerEndpoints').textContent = JSON.stringify(eps, null, 2);
+};
+$('reloadIssuer').onclick = () => { issuerLoaded = false; loadIssuer(); refreshHealth(); };
+
+/* ------------------------------------------------------------------ wallet */
+api('/catalogue').then(res => {
+  const sel = $('cfg');
+  sel.innerHTML = '';
+  if (res.error || !res.configurations?.length) {
+    sel.innerHTML = '<option value="">— issuer unreachable —</option>';
+    $('issueHint').innerHTML = `<span class="err">${esc(res.error || 'no configurations advertised')}</span>`;
+    return;
   }
-  if (preferred) select.value = preferred;
+  let preferred = null;
+  for (const id of res.configurations) {
+    const o = document.createElement('option');
+    o.value = o.textContent = id;
+    // Prefer plain SD-JWT VC: it is what the presentation flow can present, and the
+    // '_deferred' variants park issuance on the deferred endpoint.
+    if ((id.includes('sd_jwt') || id.includes('sd-jwt')) && !id.endsWith('_deferred'))
+      preferred = preferred || id;
+    sel.append(o);
+  }
+  if (preferred) sel.value = preferred;
 });
 
-// -------------------------------------------------------------------- issuance
-
 const runIssuance = async (autoLogin) => {
-  const button = autoLogin ? $('issue') : $('issueBrowser');
-  button.disabled = true;
+  const btn = autoLogin ? $('issue') : $('issueBrowser');
+  btn.disabled = true;
+  $('issueHint').textContent = 'Running…';
   try {
-    const result = await postJson('/issue', {
-      credentialConfigurationId: $('cfg').value,
-      autoLogin,
-    });
-    if (result.status === 'awaiting-authorization' && result.authorizationUrl) {
-      window.open(result.authorizationUrl, '_blank');
-    }
-    if (result.error) $('issueHint').innerHTML = `<span class="err">${result.error}</span>`;
-    await refreshCredentials();
-  } finally {
-    button.disabled = false;
-  }
+    const res = await post('/issue', { credentialConfigurationId: $('cfg').value, autoLogin });
+    if (res.status === 'awaiting-authorization' && res.authorizationUrl)
+      window.open(res.authorizationUrl, '_blank');
+    $('issueHint').innerHTML = res.error
+      ? `<span class="err">${esc(res.error)}</span>`
+      : `<span class="badge ok">${esc(res.status)}</span>`;
+    await refreshCreds();
+  } finally { btn.disabled = false; }
 };
 $('issue').onclick = () => runIssuance(true);
 $('issueBrowser').onclick = () => runIssuance(false);
 
-// ------------------------------------------------------------------ credentials
-
-const refreshCredentials = async () => {
-  const credentials = await api('/credentials');
-  const list = $('creds');
-  if (!Array.isArray(credentials) || !credentials.length) {
-    list.innerHTML = '<li class="empty">No credentials yet.</li>';
-    return;
-  }
-  list.innerHTML = '';
-  for (const credential of credentials) {
-    const item = document.createElement('li');
-    item.className = 'cred' + (credential.id === selected ? ' sel' : '');
-    item.innerHTML = `<b>${credential.configurationId}</b><br>
-      <small>${credential.format} · ${new Date(credential.issuedAt).toLocaleTimeString()}</small>`;
-    item.onclick = () => { selected = credential.id; refreshCredentials(); inspect(credential.id); };
-    list.append(item);
+let selected = null;
+const refreshCreds = async () => {
+  const list = await api('/credentials');
+  const n = Array.isArray(list) ? list.length : 0;
+  $('credCount').textContent = n || '';
+  $('credCount2').textContent = n ? n + ' held' : '';
+  if (!n) { $('creds').innerHTML = '<li class="empty">No credentials yet.</li>'; return; }
+  $('creds').innerHTML = '';
+  for (const c of list) {
+    const li = document.createElement('li');
+    li.className = 'cred';
+    li.setAttribute('aria-selected', String(c.id === selected));
+    li.innerHTML = `<b>${esc(c.configurationId)}</b>
+      <small>${esc(c.format)} · ${new Date(c.issuedAt).toLocaleTimeString()}</small>`;
+    li.onclick = () => { selected = c.id; refreshCreds(); inspect(c.id); };
+    $('creds').append(li);
   }
 };
 
 const inspect = async (id) => {
-  const decoded = await api('/credentials/' + id);
-  $('inspect').className = '';
-  $('inspect').innerHTML = `<pre>${JSON.stringify(decoded, null, 2)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`;
+  const d = await api('/credentials/' + id);
+  $('inspect').innerHTML = `<pre>${esc(JSON.stringify(d, null, 2))}</pre>`;
 };
 
 $('clear').onclick = async () => {
-  await postJson('/credentials/clear');
+  await post('/credentials/clear');
   selected = null;
-  $('inspect').className = 'empty';
-  $('inspect').textContent = 'Select a credential to decode it.';
-  refreshCredentials();
+  $('inspect').innerHTML = '<span class="empty">Select a credential to decode it.</span>';
+  refreshCreds();
 };
 
-// ----------------------------------------------------------------- presentation
+/* ---------------------------------------------------------------- verifier */
+const DEFAULT_DCQL = {
+  credentials: [{
+    id: 'pid',
+    format: 'dc+sd-jwt',
+    meta: { vct_values: ['urn:eudi:pid:1'] },
+    claims: [{ path: ['family_name'] }, { path: ['given_name'] }]
+  }]
+};
+const resetDcql = () => { $('dcql').value = JSON.stringify(DEFAULT_DCQL, null, 2); };
+resetDcql();
+$('resetDcql').onclick = resetDcql;
 
-$('present').onclick = async () => {
-  $('present').disabled = true;
-  $('vpOut').innerHTML = '';
+const readDcql = () => {
+  try { return { ok: true, value: JSON.parse($('dcql').value) }; }
+  catch (e) { return { ok: false, error: 'Query is not valid JSON: ' + e.message }; }
+};
+
+$('runLoop').onclick = async () => {
+  const q = readDcql();
+  if (!q.ok) { $('vpOut').innerHTML = `<pre class="err">${esc(q.error)}</pre>`; return; }
+  $('runLoop').disabled = true;
+  $('vpOut').innerHTML = '<span class="empty">Running…</span>';
   try {
-    const result = await postJson('/present', selected ? { credentialId: selected } : {});
-    $('vpOut').innerHTML = result.error
-      ? `<pre class="err">${result.error}</pre>`
-      : `<pre>${JSON.stringify(result, null, 2).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`;
-  } finally {
-    $('present').disabled = false;
-  }
+    const res = await post('/present', { dcqlQuery: q.value, ...(selected ? { credentialId: selected } : {}) });
+    $('vpOut').innerHTML =
+      (res.error ? `<pre class="err">${esc(res.error)}</pre>` : `<div class="row" style="margin-bottom:9px">
+         <span class="badge ok">${esc(res.status)}</span></div>`) +
+      `<pre>${esc(JSON.stringify(res, null, 2))}</pre>`;
+  } finally { $('runLoop').disabled = false; }
 };
 
-// ------------------------------------------------------------------- trace log
-
-const escape = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-
-const pretty = (body) => {
-  if (!body) return '';
-  try { return JSON.stringify(JSON.parse(body), null, 2); } catch { return body; }
+$('openTx').onclick = async () => {
+  const q = readDcql();
+  if (!q.ok) { $('vpOut').innerHTML = `<pre class="err">${esc(q.error)}</pre>`; return; }
+  $('openTx').disabled = true;
+  try {
+    const res = await post('/verifier/transaction', { dcqlQuery: q.value });
+    $('vpOut').innerHTML = res.error
+      ? `<pre class="err">${esc(res.error)}</pre>`
+      : `<pre>${esc(JSON.stringify(res, null, 2))}</pre>
+         <div class="hint">Hand <code>authorizationRequestUri</code> to a wallet, then read the
+         result at <code>/api/verifier/transaction/${esc(res.transactionId)}</code>.</div>`;
+  } finally { $('openTx').disabled = false; }
 };
 
-const render = (event) => {
-  const node = document.createElement('details');
-  node.className = 'ev';
-  const status = event.status
-    ? `<span class="st ${event.status < 400 ? 'ok' : 'bad'}">${event.status}</span>` : '';
-  const timing = event.durationMs != null ? `<span class="st">${event.durationMs}ms</span>` : '';
+/* --------------------------------------------------------------------- log */
+let cursor = 0, events = [];
+const pretty = (b) => { if (!b) return ''; try { return JSON.stringify(JSON.parse(b), null, 2); } catch { return b; } };
 
-  if (event.kind === 'http') {
-    node.innerHTML = `<summary>
-        <span class="tag ${event.actor}">${event.actor}</span>
-        <b>${event.method}</b> ${status} ${timing}
-        <span class="u">${escape(event.url)}</span>
-      </summary>
-      <pre>${escape(
-        '── request headers ──\n' + JSON.stringify(event.requestHeaders || {}, null, 2) +
-        (event.requestBody ? '\n\n── request body ──\n' + pretty(event.requestBody) : '') +
-        '\n\n── response headers ──\n' + JSON.stringify(event.responseHeaders || {}, null, 2) +
-        (event.responseBody ? '\n\n── response body ──\n' + pretty(event.responseBody) : '')
-      )}</pre>`;
+const matches = (e) => {
+  const a = $('filterActor').value;
+  if (a && e.actor !== a) return false;
+  if ($('onlyHttp').checked && e.kind !== 'http') return false;
+  return true;
+};
+
+const render = (e) => {
+  const d = document.createElement('details');
+  d.className = 'ev';
+  const time = (e.at || '').slice(11, 19);
+  if (e.kind === 'http') {
+    const code = e.status ? `<span class="code ${e.status < 400 ? 'ok' : 'bad'}">${e.status}</span>` : '';
+    const ms = e.durationMs != null ? `<span class="t">${e.durationMs}ms</span>` : '';
+    d.innerHTML = `<summary><span class="t">${time}</span><span class="tag ${e.actor}">${e.actor}</span>
+      <span class="meth">${esc(e.method)}</span>${code}${ms}
+      <span class="url">${esc(e.url)}</span></summary>
+      <pre>${esc(
+        '── request headers ──\n' + JSON.stringify(e.requestHeaders || {}, null, 2) +
+        (e.requestBody ? '\n\n── request body ──\n' + pretty(e.requestBody) : '') +
+        '\n\n── response headers ──\n' + JSON.stringify(e.responseHeaders || {}, null, 2) +
+        (e.responseBody ? '\n\n── response body ──\n' + pretty(e.responseBody) : ''))}</pre>`;
   } else {
-    const cls = event.kind === 'error' ? ' err' : '';
-    node.innerHTML = `<summary>
-        <span class="tag ${event.actor}">${event.actor}</span>
-        <span class="note${cls}">${escape(event.note || '')}</span>
-      </summary>
-      <pre>${escape(event.at)} · flow ${escape(event.flowId)}</pre>`;
+    d.innerHTML = `<summary><span class="t">${time}</span><span class="tag ${e.actor}">${e.actor}</span>
+      <span class="note ${e.kind === 'error' ? 'bad' : ''}">${esc(e.note)}</span></summary>
+      <pre>${esc(e.at)} · flow ${esc(e.flowId)}</pre>`;
   }
-  return node;
+  return d;
+};
+
+const repaint = () => {
+  const box = $('log');
+  const shown = events.filter(matches);
+  if (!shown.length) { box.innerHTML = '<div style="padding:14px" class="empty">Nothing matches.</div>'; return; }
+  box.innerHTML = '';
+  for (const e of shown) box.append(render(e));
+  if ($('follow').checked) box.scrollTop = box.scrollHeight;
 };
 
 const poll = async () => {
   const batch = await api('/trace?since=' + cursor);
-  if (Array.isArray(batch) && batch.length) {
-    const log = $('log');
-    if (!events.length) log.innerHTML = '';
-    for (const event of batch) {
-      cursor = Math.max(cursor, event.seq);
-      events.push(event);
-      log.append(render(event));
-    }
-    if ($('follow').checked) log.scrollTop = log.scrollHeight;
+  if (!Array.isArray(batch) || !batch.length) return;
+  const box = $('log');
+  if (!events.length) box.innerHTML = '';
+  for (const e of batch) {
+    cursor = Math.max(cursor, e.seq);
+    events.push(e);
+    if (matches(e)) box.append(render(e));
   }
+  if ($('follow').checked) box.scrollTop = box.scrollHeight;
 };
 
-$('clearLog').onclick = () => {
-  events = [];
-  $('log').innerHTML = '<div class="ev empty" style="padding:14px;">Nothing yet.</div>';
-};
+$('filterActor').onchange = repaint;
+$('onlyHttp').onchange = repaint;
+$('clearLog').onclick = () => { events = []; repaint(); };
 
+setRole('wallet');
+refreshCreds();
+refreshHealth();
 setInterval(poll, 800);
-refreshCredentials();
+setInterval(refreshHealth, 10000);
 </script>
 </body>
 </html>
