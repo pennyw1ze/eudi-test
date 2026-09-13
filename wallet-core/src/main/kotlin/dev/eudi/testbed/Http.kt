@@ -59,11 +59,14 @@ fun tracedHttpClient(
     sink: TraceSink,
     /** The authorisation code login needs a cookie jar to get through Keycloak. */
     withCookies: Boolean = false,
+    /** Recovers the cryptographic layer from the same exchanges. */
+    scanner: CryptoScanner? = null,
+    walletUnitId: String? = null,
 ): HttpClient = HttpClient(OkHttp) {
     expectSuccess = false
     followRedirects = false
     engine {
-        addInterceptor(TracingInterceptor(flowId, sink))
+        addInterceptor(TracingInterceptor(flowId, sink, scanner, walletUnitId))
         if (Env.trustAllTls) {
             config {
                 val sslContext = SSLContext.getInstance("TLS").apply {

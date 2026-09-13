@@ -19,6 +19,10 @@ import eu.europa.ec.eudi.sdjwt.vc.ClaimPathElement as SdJwtClaimPathElement
 
 @Serializable
 data class PresentationRequest(
+    /** Which wallet unit presents. Defaults to the first one. */
+    val walletUnitId: String? = null,
+    /** Which registered verifier acts as relying party. Defaults to the first one. */
+    val verifierId: String? = null,
     /** Which stored credential to present. Defaults to the most recent SD-JWT VC. */
     val credentialId: String? = null,
     /** A DCQL query for the verifier to ask. Defaults to a couple of PID claims. */
@@ -29,6 +33,7 @@ data class PresentationRequest(
 data class PresentationResult(
     val flowId: String,
     val status: String,
+    val walletUnitId: String? = null,
     val transactionId: String? = null,
     val authorizationRequestUri: String? = null,
     /** Claims the verifier asked for, as the wallet understood them. */
@@ -48,8 +53,9 @@ data class PresentationResult(
  */
 class PresentationService(
     private val sink: TraceSink,
-    private val store: CredentialStore,
-    private val keys: WalletKeys,
+    private val crypto: CryptoSink,
+    private val scanner: CryptoScanner,
+    private val registry: Registry,
     private val verifier: VerifierDriver,
 ) {
 
@@ -62,16 +68,18 @@ class PresentationService(
 
     suspend fun present(request: PresentationRequest): PresentationResult {
         val flowId = "vp-${UUID.randomUUID().toString().take(8)}"
-        val client = tracedHttpClient(flowId, sink)
+        val unit = registry.walletUnit(request.walletUnitId)
+        val verifierRef = registry.verifier(request.verifierId)
+        val client = tracedHttpClient(flowId, sink, scanner = scanner, walletUnitId = unit.id)
 
         return try {
-            sink.step(flowId, "Starting OpenID4VP presentation")
+            sink.step(flowId, "Starting OpenID4VP presentation from '${unit.label}' to '${verifierRef.label}'")
 
-            val credential = pickCredential(request)
+            val credential = pickCredential(request, unit)
             val query = request.dcqlQuery ?: VerifierDriver.defaultDcqlQuery()
             val nonce = UUID.randomUUID().toString()
 
-            val transaction = verifier.initTransaction(client, flowId, query, nonce)
+            val transaction = verifier.initTransaction(client, flowId, query, nonce, verifierRef)
             val requestUri = verifier.authorizationRequestUri(transaction)
 
             sink.step(flowId, "Wallet received an authorisation request by reference")
@@ -80,8 +88,42 @@ class PresentationService(
             val resolution = openId4Vp.resolveRequestUri(requestUri)
             val resolved = when (resolution) {
                 is Resolution.Success -> resolution.requestObject
-                is Resolution.Invalid -> error("Wallet rejected the request: ${resolution.error}")
+                is Resolution.Invalid -> {
+                    // A rejected request object never produces a presentation, and the reason
+                    // is cryptographic; it belongs in the crypto trace, not only in the error.
+                    crypto.record(
+                        flowId = flowId,
+                        operation = "verify",
+                        actor = "wallet",
+                        artifact = "Authorisation request object (JAR)",
+                        summary = "Wallet rejected the verifier's signed request",
+                        binds = mapOf("reason" to resolution.error.toString()),
+                        walletUnitId = unit.id,
+                    )
+                    error("Wallet rejected the request: ${resolution.error}")
+                }
             }
+
+            // Accepting the request is itself a cryptographic decision, and it happens
+            // inside the wallet, so no exchange on the wire records it.
+            crypto.record(
+                flowId = flowId,
+                operation = "verify",
+                actor = "wallet",
+                artifact = "Authorisation request object (JAR)",
+                summary = "Wallet verified the verifier's signature and accepted its identity " +
+                    "before deciding what to disclose",
+                keys = emptyList(),
+                binds = mapOf(
+                    "client id" to resolved.client.id.clientId,
+                    "client id prefix" to resolved.client.id.prefix.toString(),
+                    "nonce" to resolved.nonce,
+                ),
+                caveat = "The certificate chain is accepted wholesale: the testbed's X509SanDns " +
+                    "trust check returns true for every chain. A real wallet would resolve the " +
+                    "verifier against a trusted list of registered relying parties.",
+                walletUnitId = unit.id,
+            )
 
             val credentialQuery = resolved.query.credentials.value.firstOrNull()
                 ?: error("The verifier's DCQL query contains no credential queries")
@@ -99,6 +141,7 @@ class PresentationService(
             )
 
             val vpToken = buildSdJwtPresentation(
+                unit = unit,
                 raw = credential.raw,
                 requestedPaths = requestedPaths,
                 audience = resolved.client.id.clientId,
@@ -118,13 +161,32 @@ class PresentationService(
             // A rejected vp_token is a failed presentation. Reporting it as success
             // because the exchange completed would hide exactly what we came to test.
             val accepted = outcome !is DispatchOutcome.VerifierResponse.Rejected
+            val rejection = if (accepted) null else rejectionReason(flowId)
 
-            val walletResponse = verifier.walletResponse(client, flowId, transaction.transactionId)
+            // The verdict is the last cryptographic act of the exchange: the verifier
+            // checked the issuer's signature, the disclosure digests and the key binding.
+            crypto.record(
+                flowId = flowId,
+                operation = "verify",
+                actor = "verifier",
+                artifact = "Verifiable presentation",
+                summary = if (accepted) {
+                    "Verifier accepted the presentation: the issuer's signature, the digests of the " +
+                        "disclosed claims and the key binding to this nonce all checked out"
+                } else {
+                    "Verifier rejected the presentation"
+                },
+                binds = buildMap { rejection?.let { put("reason", it) } },
+                walletUnitId = unit.id,
+            )
+
+            val walletResponse = verifier.walletResponse(client, flowId, transaction.transactionId, verifierRef)
 
             PresentationResult(
                 flowId = flowId,
                 status = if (accepted) "presented" else "rejected",
-                error = if (accepted) null else "The verifier rejected the vp_token; see the protocol log for its reason",
+                walletUnitId = unit.id,
+                error = if (accepted) null else "The verifier rejected the vp_token: ${rejection ?: "no reason given"}",
                 transactionId = transaction.transactionId,
                 authorizationRequestUri = requestUri,
                 requestedClaims = requestedPaths.map { it.toString() },
@@ -133,18 +195,41 @@ class PresentationService(
             )
         } catch (failure: Exception) {
             sink.error(flowId, failure.message ?: failure.toString())
-            PresentationResult(flowId = flowId, status = "failed", error = failure.message ?: failure.toString())
+            PresentationResult(
+                flowId = flowId,
+                status = "failed",
+                walletUnitId = unit.id,
+                error = failure.message ?: failure.toString(),
+            )
         } finally {
             client.close()
         }
     }
 
-    private fun pickCredential(request: PresentationRequest): StoredCredential {
+    /**
+     * The verifier's own words for a rejection.
+     *
+     * `DispatchOutcome.VerifierResponse.Rejected` is a singleton carrying no detail, so
+     * the reason survives only in the response body the tracer captured. Recovering it
+     * is the difference between "see the protocol log" and an answer — which is exactly
+     * the difference that hid the 20-second validity window for as long as it did.
+     */
+    private fun rejectionReason(flowId: String): String? =
+        sink.since(0, flowId)
+            .lastOrNull { it.kind == "http" && (it.status ?: 0) >= 400 && !it.responseBody.isNullOrBlank() }
+            ?.responseBody
+            ?.trim()
+            ?.take(400)
+
+    private fun pickCredential(request: PresentationRequest, unit: WalletUnit): StoredCredential {
         request.credentialId?.let { id ->
-            return store.get(id) ?: error("No stored credential with id '$id'")
+            // Deliberately scoped to this unit: asking one unit to present another's
+            // credential is exactly the mistake the device key binding exists to catch.
+            return unit.store.get(id)
+                ?: error("Wallet unit '${unit.label}' holds no credential with id '$id'")
         }
-        return store.all().lastOrNull { it.format.contains("sd-jwt") }
-            ?: error("The wallet holds no SD-JWT VC credential; issue one first")
+        return unit.store.all().lastOrNull { it.format.contains("sd-jwt") }
+            ?: error("Wallet unit '${unit.label}' holds no SD-JWT VC credential; issue one first")
     }
 
     /**
@@ -153,6 +238,7 @@ class PresentationService(
      * this nonce, and the wallet's device key.
      */
     private suspend fun buildSdJwtPresentation(
+        unit: WalletUnit,
         raw: String,
         requestedPaths: List<DcqlClaimPath>,
         audience: String,
@@ -169,9 +255,9 @@ class PresentationService(
             ?: error("The stored credential cannot satisfy the requested claims")
 
         val buildKbJwt = NimbusSdJwtOps.kbJwtIssuer(
-            signer = ECDSASigner(keys.deviceKey),
+            signer = ECDSASigner(unit.keys.deviceKey),
             signAlgorithm = JWSAlgorithm.ES256,
-            publicKey = keys.deviceKey.toPublicJWK(),
+            publicKey = unit.keys.deviceKey.toPublicJWK(),
         ) {
             audience(audience)
             claim("nonce", nonce)

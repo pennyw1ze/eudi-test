@@ -93,6 +93,11 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: password
     volumes:
       - ./vendor/eudi-srv-pid-issuer/docker-compose/keycloak/realms/:/opt/keycloak/data/import
+      # Extra natural-person subjects (Anna Bianchi, Jan Kowalski) so different wallet
+      # units can be issued distinct PIDs. Keycloak's directory import picks up any
+      # `<realm>-users-<n>.json` file, so this merges with the vendored users-0.json
+      # without patching the (git-ignored) vendored realm.
+      - ./config/keycloak/pid-issuer-realm-users-1.json:/opt/keycloak/data/import/pid-issuer-realm-users-1.json:ro
       - ./vendor/eudi-srv-pid-issuer/docker-compose/keycloak/certs/:/etc/ssl/certs/
       - ./vendor/eudi-srv-pid-issuer/docker-compose/keycloak/conf/keycloak.conf:/opt/keycloak/conf/keycloak.conf
     healthcheck:

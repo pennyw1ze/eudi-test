@@ -9,18 +9,20 @@
   --bg:#eef1f5; --panel:#fff; --panel-2:#f7f9fb; --ink:#111827; --ink-2:#4b5563;
   --muted:#6b7280; --line:#dde3ea; --line-2:#eaeff4;
   --accent:#2557d6; --accent-ink:#fff; --accent-soft:#e8eefc;
-  --ok:#0b7a4b; --ok-soft:#e3f5ec; --bad:#b32318; --bad-soft:#fdeceb; --warn:#9a6700;
-  --issuer:#7134c4; --as:#a4610b; --verifier:#0d7c6d; --wallet:#2557d6;
+  --ok:#0b7a4b; --ok-soft:#e3f5ec; --bad:#b32318; --bad-soft:#fdeceb;
+  --warn:#9a6700; --warn-soft:#fdf3d7;
+  --issuer:#7134c4; --as:#a4610b; --verifier:#0d7c6d; --wallet:#2557d6; --wp:#c2185b;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --radius:10px; --sidebar:232px;
+  --radius:10px; --sidebar:268px;
 }
 @media (prefers-color-scheme:dark){
   :root{
     --bg:#0d1117; --panel:#161b22; --panel-2:#1b2129; --ink:#e6edf3; --ink-2:#adbac7;
     --muted:#8b949e; --line:#2a313a; --line-2:#232a33;
     --accent:#4d8bff; --accent-soft:#16233d;
-    --ok:#3fb950; --ok-soft:#122119; --bad:#f85149; --bad-soft:#2a1416; --warn:#d29922;
-    --issuer:#b083f0; --as:#e3b341; --verifier:#39c5bb; --wallet:#4d8bff;
+    --ok:#3fb950; --ok-soft:#122119; --bad:#f85149; --bad-soft:#2a1416;
+    --warn:#d29922; --warn-soft:#2a2213;
+    --issuer:#b083f0; --as:#e3b341; --verifier:#39c5bb; --wallet:#4d8bff; --wp:#f07ba8;
   }
 }
 *{box-sizing:border-box}
@@ -29,17 +31,16 @@ body{margin:0;background:var(--bg);color:var(--ink);
   font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
 button,select,input,textarea{font:inherit;color:inherit}
 
-/* ---------- shell ---------- */
 .app{display:grid;grid-template-columns:var(--sidebar) 1fr;height:100vh}
 
 /* ---------- sidebar ---------- */
 aside{background:var(--panel);border-right:1px solid var(--line);
   display:flex;flex-direction:column;min-height:0}
-.brand{padding:16px 18px 14px;border-bottom:1px solid var(--line)}
+.brand{padding:15px 16px 13px;border-bottom:1px solid var(--line)}
 .brand h1{margin:0;font-size:14px;font-weight:650;letter-spacing:.01em}
-.brand p{margin:2px 0 0;font-size:11px;color:var(--muted)}
-nav{padding:10px 8px;display:flex;flex-direction:column;gap:2px}
-.navitem{display:flex;gap:10px;align-items:center;padding:9px 11px;border-radius:8px;
+.brand p{margin:2px 0 0;font-size:11px;color:var(--muted);word-break:break-all}
+nav{padding:9px 8px;display:flex;flex-direction:column;gap:2px;border-bottom:1px solid var(--line)}
+.navitem{display:flex;gap:10px;align-items:center;padding:8px 11px;border-radius:8px;
   border:0;background:transparent;text-align:left;cursor:pointer;width:100%}
 .navitem:hover{background:var(--panel-2)}
 .navitem[aria-current="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
@@ -48,17 +49,43 @@ nav{padding:10px 8px;display:flex;flex-direction:column;gap:2px}
 .dot.verifier{background:var(--verifier)}
 .navitem small{margin-left:auto;font:11px var(--mono);color:var(--muted)}
 
-.health{margin-top:auto;border-top:1px solid var(--line);padding:12px 14px}
-.health h2{margin:0 0 8px;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.sidescroll{overflow-y:auto;flex:1;min-height:0;padding:4px 0 8px}
+.group{padding:9px 12px 4px}
+.group > header{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.group > header h2{margin:0;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.plus{margin-left:auto;width:21px;height:21px;line-height:1;border-radius:6px;flex:none;
+  border:1px solid var(--line);background:var(--panel-2);color:var(--accent);cursor:pointer;
+  font-size:15px;font-weight:600;display:grid;place-items:center;padding:0}
+.plus:hover{border-color:var(--accent);background:var(--accent-soft)}
+ul.picker{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px}
+.pick{display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:7px;cursor:pointer;
+  border:1px solid transparent;background:var(--panel-2);font-size:12.5px}
+.pick:hover{border-color:var(--line)}
+.pick[aria-selected="true"]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);font-weight:560}
+.pick .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pick .ct{font:10px var(--mono);color:var(--muted)}
+.pick .x{border:0;background:transparent;color:var(--muted);cursor:pointer;padding:0 2px;
+  font-size:14px;line-height:1;visibility:hidden}
+.pick:hover .x{visibility:visible}
+.pick .x:hover{color:var(--bad)}
+
+.health{border-top:1px solid var(--line);padding:10px 13px}
+.health h2{margin:0 0 7px;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
 .hrow{display:flex;align-items:center;gap:7px;padding:2px 0;font-size:12px}
 .hrow .led{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
 .hrow.up .led{background:var(--ok)} .hrow.down .led{background:var(--bad)}
-.hrow span:last-child{margin-left:auto;font:10px var(--mono);color:var(--muted)}
+.hrow .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hrow span:last-child{margin-left:auto;font:10px var(--mono);color:var(--muted);flex:none}
+
+.sessionbar{border-top:1px solid var(--line);padding:9px 13px;font-size:11px;color:var(--muted)}
+.sessionbar b{display:block;font:10px var(--mono);color:var(--ink-2);word-break:break-all;font-weight:400}
+.sessionbar a{color:var(--accent);text-decoration:none}
+.sessionbar a:hover{text-decoration:underline}
 
 /* ---------- main ---------- */
-main{display:grid;grid-template-rows:1fr minmax(180px,var(--logh,34vh));min-height:0;min-width:0}
-.stage{overflow-y:auto;padding:20px 22px;min-height:0}
-.stage-head{display:flex;align-items:flex-end;gap:14px;margin-bottom:16px;flex-wrap:wrap}
+main{display:grid;grid-template-rows:1fr minmax(200px,var(--logh,40vh));min-height:0;min-width:0}
+.stage{overflow-y:auto;padding:19px 21px;min-height:0}
+.stage-head{display:flex;align-items:flex-end;gap:13px;margin-bottom:15px;flex-wrap:wrap}
 .stage-head h2{margin:0;font-size:19px;font-weight:640;letter-spacing:-.01em}
 .stage-head p{margin:0;color:var(--muted);font-size:13px;flex:1 1 260px}
 
@@ -73,8 +100,8 @@ main{display:grid;grid-template-rows:1fr minmax(180px,var(--logh,34vh));min-heig
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
 .field label{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
-select,input[type=text],textarea{padding:8px 10px;border:1px solid var(--line);border-radius:8px;
-  background:var(--panel-2);width:100%}
+select,input[type=text],input[type=password],textarea{padding:8px 10px;border:1px solid var(--line);
+  border-radius:8px;background:var(--panel-2);width:100%}
 textarea{font:12px/1.5 var(--mono);resize:vertical;min-height:130px}
 select:focus,input:focus,textarea:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
 
@@ -102,30 +129,72 @@ ul.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;ga
 .badge.ok{background:var(--ok-soft);color:var(--ok)}
 .badge.bad{background:var(--bad-soft);color:var(--bad)}
 
-/* ---------- protocol log ---------- */
+/* key chips: one colour per thumbprint, so a binding is visible at a glance */
+.kchip{display:inline-flex;align-items:center;gap:5px;padding:1px 7px 1px 5px;border-radius:20px;
+  font:10.5px var(--mono);border:1px solid;white-space:nowrap}
+.kchip i{width:7px;height:7px;border-radius:50%;flex:none;background:currentColor}
+.kchip .role{font-weight:600;letter-spacing:.02em}
+
+/* ---------- log ---------- */
 .logwrap{border-top:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-height:0}
-.logbar{display:flex;align-items:center;gap:9px;padding:8px 14px;border-bottom:1px solid var(--line-2);flex-wrap:wrap}
-.logbar strong{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.logbar{display:flex;align-items:center;gap:9px;padding:6px 13px;border-bottom:1px solid var(--line-2);flex-wrap:wrap}
+.tabs{display:flex;gap:3px}
+.tab{border:0;background:transparent;padding:6px 11px;border-radius:7px;cursor:pointer;
+  font-size:12px;font-weight:550;color:var(--muted)}
+.tab:hover{background:var(--panel-2)}
+.tab[aria-current="true"]{background:var(--accent-soft);color:var(--accent)}
 .logbar .sp{flex:1}
 .logbar label{font-size:12px;color:var(--ink-2);display:flex;align-items:center;gap:5px}
 .logbar select{width:auto;padding:4px 8px;font-size:12px}
 .log{overflow-y:auto;min-height:0;flex:1}
+
 details.ev{border-bottom:1px solid var(--line-2)}
-details.ev > summary{cursor:pointer;padding:7px 14px;display:flex;gap:9px;align-items:baseline;
+details.ev > summary{cursor:pointer;padding:7px 13px;display:flex;gap:8px;align-items:baseline;
   flex-wrap:wrap;list-style:none}
 details.ev > summary::-webkit-details-marker{display:none}
 details.ev:hover > summary{background:var(--panel-2)}
-.tag{font:10px/1.5 var(--mono);padding:1px 6px;border-radius:4px;color:#fff;flex:none;text-transform:uppercase;letter-spacing:.03em}
+.tag{font:10px/1.5 var(--mono);padding:1px 6px;border-radius:4px;color:#fff;flex:none;
+  text-transform:uppercase;letter-spacing:.03em}
 .tag.issuer{background:var(--issuer)} .tag.authorization-server{background:var(--as)}
-.tag.verifier{background:var(--verifier)} .tag.wallet{background:var(--wallet)} .tag.other{background:var(--muted)}
+.tag.verifier{background:var(--verifier)} .tag.wallet{background:var(--wallet)}
+.tag.wallet-provider{background:var(--wp)} .tag.other{background:var(--muted)}
 .meth{font:11px var(--mono);font-weight:700}
 .code{font:11px var(--mono);padding:0 5px;border-radius:4px;border:1px solid var(--line)}
 .code.ok{color:var(--ok)} .code.bad{color:var(--bad)}
 .url{font:11px var(--mono);color:var(--muted);word-break:break-all;flex:1 1 200px}
 .note{font-size:12.5px}
 .note.bad{color:var(--bad)}
-details.ev pre{margin:0 14px 11px;max-height:300px}
+details.ev pre{margin:0 13px 10px;max-height:300px}
 .t{font:10px var(--mono);color:var(--muted);flex:none}
+
+/* crypto rows */
+.op{font:9.5px/1.5 var(--mono);padding:1px 6px;border-radius:4px;flex:none;font-weight:700;
+  text-transform:uppercase;letter-spacing:.05em;border:1px solid}
+.op.sign{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.op.keygen{color:var(--wp);border-color:var(--wp);background:transparent}
+.op.verify{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}
+.op.disclose{color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}
+.op.bind{color:var(--muted);border-color:var(--line);background:transparent}
+.art{font-weight:620;font-size:13px}
+.sum{flex:1 1 100%;font-size:12.5px;color:var(--ink-2);margin:1px 0 0;padding-left:2px}
+.cbody{padding:0 13px 11px;display:flex;flex-direction:column;gap:9px}
+table.binds{border-collapse:collapse;width:100%;font-size:12px}
+table.binds td{padding:3px 8px 3px 0;vertical-align:top;border-bottom:1px solid var(--line-2)}
+table.binds td:first-child{color:var(--muted);white-space:nowrap;width:1%;font-size:11.5px}
+table.binds td:last-child{font:11.5px var(--mono);word-break:break-all}
+.caveat{background:var(--warn-soft);border-left:3px solid var(--warn);border-radius:0 7px 7px 0;
+  padding:8px 11px;font-size:12px;color:var(--ink-2)}
+.caveat b{color:var(--warn);display:block;font-size:10px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:2px}
+.subhead{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+
+/* ---------- dialog ---------- */
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--ink);
+  padding:0;width:min(430px,92vw);box-shadow:0 18px 50px rgba(0,0,0,.28)}
+dialog::backdrop{background:rgba(15,20,28,.5)}
+dialog h3{margin:0;padding:14px 17px;border-bottom:1px solid var(--line-2);font-size:14px;font-weight:620}
+dialog .in{padding:15px 17px}
+dialog footer{display:flex;gap:8px;justify-content:flex-end;padding:0 17px 15px}
+dialog .hint{margin-top:0;margin-bottom:12px}
 </style>
 </head>
 <body>
@@ -143,10 +212,27 @@ details.ev pre{margin:0 14px 11px;max-height:300px}
       <button class="navitem" data-role="verifier" aria-current="false"><i class="dot verifier"></i>Verifier</button>
     </nav>
 
+    <div class="sidescroll">
+      <div class="group">
+        <header><h2>Wallet units</h2><button class="plus" id="addUnit" title="Add a wallet unit">+</button></header>
+        <ul class="picker" id="unitList"></ul>
+      </div>
+      <div class="group">
+        <header><h2>Issuers</h2><button class="plus" id="addIssuer" title="Add an issuer">+</button></header>
+        <ul class="picker" id="issuerList"></ul>
+      </div>
+      <div class="group">
+        <header><h2>Verifiers</h2><button class="plus" id="addVerifier" title="Add a verifier">+</button></header>
+        <ul class="picker" id="verifierList"></ul>
+      </div>
+    </div>
+
     <div class="health">
       <h2>Services</h2>
       <div id="health"><div class="hrow"><i class="led"></i>checking…</div></div>
     </div>
+
+    <div class="sessionbar" id="session">…</div>
   </aside>
 
   <main>
@@ -176,13 +262,17 @@ details.ev pre{margin:0 14px 11px;max-height:300px}
     <!-- ============================ WALLET ============================ -->
     <section class="stage" id="stage-wallet">
       <div class="stage-head">
-        <h2>Wallet</h2>
+        <h2 id="unitTitle">Wallet</h2>
         <p>The holder. Requests credentials from the issuer and presents them to the verifier.</p>
       </div>
       <div class="grid">
         <div class="card">
           <h3>Request a credential</h3>
           <div class="in">
+            <div class="field">
+              <label for="subject">Subject (person)</label>
+              <select id="subject"><option>Loading…</option></select>
+            </div>
             <div class="field">
               <label for="cfg">Credential configuration</label>
               <select id="cfg"><option>Loading…</option></select>
@@ -201,6 +291,18 @@ details.ev pre{margin:0 14px 11px;max-height:300px}
             <ul class="list" id="creds"><li class="empty">No credentials yet.</li></ul>
             <div class="row" style="margin-top:11px">
               <button class="ghost" id="clear">Clear wallet</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Unit key material</h3>
+          <div class="in">
+            <div id="unitKeys"><span class="empty">…</span></div>
+            <div class="hint">
+              Thumbprints are RFC 7638. The same colour in the cryptographic trace is the same key —
+              that is how the binding chain from key attestation to <code>cnf.jwk</code> to key
+              binding JWT becomes visible.
             </div>
           </div>
         </div>
@@ -232,7 +334,7 @@ details.ev pre{margin:0 14px 11px;max-height:300px}
               <button class="ghost" id="resetDcql">Reset query</button>
             </div>
             <div class="hint">
-              <strong>Request &amp; present</strong> runs the whole loop against the wallet.
+              <strong>Request &amp; present</strong> runs the whole loop against the selected wallet unit.
               <strong>Open transaction only</strong> stops after the request, so a phone wallet can pick it up.
             </div>
           </div>
@@ -247,25 +349,49 @@ details.ev pre{margin:0 14px 11px;max-height:300px}
     <!-- =========================== LOG =========================== -->
     <div class="logwrap">
       <div class="logbar">
-        <strong>Protocol log</strong>
+        <div class="tabs">
+          <button class="tab" data-view="crypto" aria-current="true">Cryptographic trace</button>
+          <button class="tab" data-view="net" aria-current="false">Network</button>
+        </div>
         <label>Actor
           <select id="filterActor">
             <option value="">all</option>
+            <option value="wallet">wallet</option>
+            <option value="wallet-provider">wallet provider</option>
             <option value="issuer">issuer</option>
             <option value="authorization-server">authorisation server</option>
             <option value="verifier">verifier</option>
-            <option value="wallet">wallet</option>
           </select>
         </label>
-        <label><input type="checkbox" id="onlyHttp"> HTTP only</label>
+        <label id="opFilterWrap">Operation
+          <select id="filterOp">
+            <option value="">all</option>
+            <option value="keygen">keygen</option>
+            <option value="sign">sign</option>
+            <option value="verify">verify</option>
+            <option value="disclose">disclose</option>
+            <option value="bind">bind</option>
+          </select>
+        </label>
+        <label id="httpFilterWrap" hidden><input type="checkbox" id="onlyHttp"> HTTP only</label>
         <span class="sp"></span>
         <label><input type="checkbox" id="follow" checked> follow</label>
         <button class="ghost" id="clearLog" style="padding:4px 10px">Clear</button>
       </div>
-      <div class="log" id="log"><div style="padding:14px" class="empty">No traffic yet.</div></div>
+      <div class="log" id="log"><div style="padding:14px" class="empty">Nothing recorded yet.</div></div>
     </div>
   </main>
 </div>
+
+<!-- ============================ DIALOGS ============================ -->
+<dialog id="dlg">
+  <h3 id="dlgTitle"></h3>
+  <div class="in" id="dlgBody"></div>
+  <footer>
+    <button class="ghost" id="dlgCancel">Cancel</button>
+    <button class="primary" id="dlgOk">Add</button>
+  </footer>
+</dialog>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -279,6 +405,17 @@ const api = async (path, opts) => {
 const post = (path, body) => api(path, {
   method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body || {})
 });
+const del = (path) => api(path, { method:'DELETE' });
+
+/* ------------------------------------------------------------- selection */
+const sel = { unit:null, issuer:null, verifier:null, credential:null };
+let units = [], issuers = [], verifiers = [];
+
+const q = (base, extra) => {
+  const p = new URLSearchParams(extra || {});
+  if (sel.unit) p.set('walletUnitId', sel.unit);
+  return base + (p.toString() ? '?' + p : '');
+};
 
 /* ---------------------------------------------------------- role switching */
 let role = 'wallet';
@@ -288,10 +425,153 @@ const setRole = (next) => {
     el.setAttribute('aria-current', String(el.dataset.role === next));
   for (const id of ['issuer','wallet','verifier'])
     $('stage-' + id).hidden = (id !== next);
-  if (next === 'issuer') loadIssuer();
+  if (next === 'issuer') loadIssuer(true);
 };
 for (const el of document.querySelectorAll('.navitem'))
   el.onclick = () => setRole(el.dataset.role);
+
+/* ------------------------------------------------------------------ dialog */
+/**
+ * One dialog reused for all three participant types. `fields` drives both the form
+ * and the payload, so adding a field to a participant needs no new markup.
+ */
+const ask = (title, fields) => new Promise((resolve) => {
+  $('dlgTitle').textContent = title;
+  $('dlgBody').innerHTML = fields.map(f => `
+    <div class="field">
+      <label for="f_${f.k}">${esc(f.label)}</label>
+      <input type="${f.type || 'text'}" id="f_${f.k}" value="${esc(f.value || '')}"
+             placeholder="${esc(f.placeholder || '')}" spellcheck="false">
+    </div>`).join('');
+  const dlg = $('dlg');
+  // Both the buttons and the dialog's own close event can settle this, and a promise
+  // only settles once — the flag makes which one wins independent of event ordering.
+  let settled = false;
+  const done = (value) => { if (settled) return; settled = true; resolve(value); dlg.close(); };
+  $('dlgOk').onclick = () => {
+    const out = {};
+    for (const f of fields) out[f.k] = $('f_' + f.k).value.trim();
+    if (fields.some(f => f.required && !out[f.k])) return;
+    done(out);
+  };
+  $('dlgCancel').onclick = () => done(null);
+  dlg.onclose = () => done(null);
+  dlg.showModal();
+  const first = $('f_' + fields[0].k);
+  first.focus(); first.select();
+});
+
+/* ------------------------------------------------------------ participants */
+const renderPicker = (el, items, selectedId, onPick, onRemove, subtitle) => {
+  el.innerHTML = '';
+  if (!items.length) { el.innerHTML = '<li class="empty" style="padding:4px 8px">None yet.</li>'; return; }
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'pick';
+    li.setAttribute('aria-selected', String(item.id === selectedId));
+    li.innerHTML = `<span class="nm" title="${esc(subtitle(item))}">${esc(item.label)}</span>
+      <span class="ct">${esc(item.badge || '')}</span>
+      <button class="x" title="Remove">&times;</button>`;
+    li.querySelector('.nm').onclick = () => onPick(item.id);
+    li.querySelector('.ct').onclick = () => onPick(item.id);
+    li.querySelector('.x').onclick = (e) => { e.stopPropagation(); onRemove(item); };
+    el.append(li);
+  }
+};
+
+const refreshUnits = async () => {
+  units = await api('/wallet-units');
+  if (!Array.isArray(units)) { units = []; return; }
+  if (!units.some(u => u.id === sel.unit)) sel.unit = units[0]?.id || null;
+  const current = units.find(u => u.id === sel.unit);
+  renderPicker(
+    $('unitList'),
+    units.map(u => ({ ...u, badge: u.credentials ? u.credentials + '✦' : '' })),
+    sel.unit,
+    async (id) => { sel.unit = id; sel.credential = null; await Promise.all([refreshUnits(), refreshCreds()]); loadSubjects(); },
+    async (u) => {
+      if (units.length <= 1) return alert('The last wallet unit cannot be removed.');
+      if (!confirm(`Remove "${u.label}" and the credentials bound to its keys?`)) return;
+      await del('/wallet-units/' + u.id);
+      if (sel.unit === u.id) sel.unit = null;
+      await refreshUnits(); await refreshCreds();
+    },
+    (u) => `${u.credentials} credential(s), created ${new Date(u.createdAt).toLocaleTimeString()}`,
+  );
+  $('unitTitle').textContent = current ? current.label : 'Wallet';
+  $('unitKeys').innerHTML = current && current.keys.length
+    ? `<div class="row" style="gap:6px">${current.keys.map(keyChip).join('')}</div>`
+    : '<span class="empty">No keys.</span>';
+};
+
+const refreshIssuers = async () => {
+  issuers = await api('/issuers');
+  if (!Array.isArray(issuers)) { issuers = []; return; }
+  if (!issuers.some(i => i.id === sel.issuer)) sel.issuer = issuers[0]?.id || null;
+  renderPicker($('issuerList'), issuers, sel.issuer,
+    async (id) => { sel.issuer = id; await refreshIssuers(); loadIssuer(true); loadCatalogue(); },
+    async (i) => {
+      if (!confirm(`Remove issuer "${i.label}"?`)) return;
+      await del('/issuers/' + i.id);
+      if (sel.issuer === i.id) sel.issuer = null;
+      await refreshIssuers(); loadCatalogue(); refreshHealth();
+    },
+    (i) => i.base);
+};
+
+const refreshVerifiers = async () => {
+  verifiers = await api('/verifiers');
+  if (!Array.isArray(verifiers)) { verifiers = []; return; }
+  if (!verifiers.some(v => v.id === sel.verifier)) sel.verifier = verifiers[0]?.id || null;
+  renderPicker($('verifierList'), verifiers, sel.verifier,
+    async (id) => { sel.verifier = id; await refreshVerifiers(); },
+    async (v) => {
+      if (!confirm(`Remove verifier "${v.label}"?`)) return;
+      await del('/verifiers/' + v.id);
+      if (sel.verifier === v.id) sel.verifier = null;
+      await refreshVerifiers(); refreshHealth();
+    },
+    (v) => v.base);
+};
+
+$('addUnit').onclick = async () => {
+  const v = await ask('Add a wallet unit', [
+    { k:'label', label:'Name', required:true, value:'Wallet unit ' + (units.length + 1) },
+  ]);
+  if (!v) return;
+  const created = await post('/wallet-units', v);
+  if (created.error) return alert(created.error);
+  sel.unit = created.id; sel.credential = null;
+  await refreshUnits(); await refreshCreds();
+};
+
+$('addIssuer').onclick = async () => {
+  const v = await ask('Add an issuer', [
+    { k:'label', label:'Name', required:true, placeholder:'My issuer' },
+    { k:'base', label:'Credential issuer identifier', required:true, placeholder:'https://host/pid-issuer' },
+    { k:'clientId', label:'Client id at the authorisation server', placeholder:'eudiw-abca' },
+    { k:'loginUser', label:'Login user', placeholder:'tneal' },
+    { k:'loginPassword', label:'Login password', type:'password', placeholder:'password' },
+  ]);
+  if (!v) return;
+  const created = await post('/issuers', v);
+  if (created.error) return alert(created.error);
+  sel.issuer = created.id;
+  await refreshIssuers(); loadIssuer(true); loadCatalogue(); refreshHealth();
+};
+
+$('addVerifier').onclick = async () => {
+  const v = await ask('Add a verifier', [
+    { k:'label', label:'Name', required:true, placeholder:'My verifier' },
+    { k:'base', label:'Verifier API base', required:true, placeholder:'https://host/verifier' },
+    { k:'intendedUseId', label:'Intended use id', placeholder:'1' },
+  ]);
+  if (!v) return;
+  const created = await post('/verifiers', v);
+  if (created.error) return alert(created.error);
+  sel.verifier = created.id;
+  await refreshVerifiers(); refreshHealth();
+};
 
 /* ---------------------------------------------------------------- services */
 const refreshHealth = async () => {
@@ -299,22 +579,30 @@ const refreshHealth = async () => {
   if (!Array.isArray(rows)) return;
   $('health').innerHTML = rows.map(r =>
     `<div class="hrow ${r.state}" title="${esc(r.url)} — ${esc(r.detail)}">
-       <i class="led"></i>${esc(r.label)}<span>${esc(r.detail)}</span></div>`).join('');
+       <i class="led"></i><span class="nm">${esc(r.label)}</span><span>${esc(r.detail)}</span></div>`).join('');
 };
 
-api('/config').then(c => {
-  $('origin').textContent = c.publicOrigin + ' · user ' + c.autoLoginUser;
-});
+const refreshSession = async () => {
+  const s = await api('/session');
+  if (s.error) return;
+  $('session').innerHTML =
+    `Session <code>${esc(s.id)}</code> · ${s.cryptoEvents} crypto / ${s.networkEvents} network
+     <b>${esc(s.directory)}</b>
+     <a href="/api/session/crypto-trace" download>Download crypto trace</a>`;
+};
+
+api('/config').then(c => { $('origin').textContent = c.publicOrigin; });
 
 /* ------------------------------------------------------------------ issuer */
-let issuerLoaded = false;
-const loadIssuer = async () => {
-  if (issuerLoaded) return;
-  issuerLoaded = true;
-  const meta = await api('/issuer/metadata');
+let issuerLoadedFor = null;
+const loadIssuer = async (force) => {
+  if (!force && issuerLoadedFor === sel.issuer) return;
+  issuerLoadedFor = sel.issuer;
+  const meta = await api('/issuer/metadata' + (sel.issuer ? '?issuerId=' + sel.issuer : ''));
   if (meta.error) {
     $('issuerMeta').innerHTML = `<span class="err">${esc(meta.error)}</span>`;
     $('cfgList').innerHTML = '<li class="empty">Issuer unreachable.</li>';
+    $('issuerEndpoints').textContent = '';
     return;
   }
   $('issuerMeta').textContent = JSON.stringify(meta, null, 2);
@@ -337,14 +625,35 @@ const loadIssuer = async () => {
   };
   $('issuerEndpoints').textContent = JSON.stringify(eps, null, 2);
 };
-$('reloadIssuer').onclick = () => { issuerLoaded = false; loadIssuer(); refreshHealth(); };
+$('reloadIssuer').onclick = () => { loadIssuer(true); refreshHealth(); };
 
 /* ------------------------------------------------------------------ wallet */
-api('/catalogue').then(res => {
-  const sel = $('cfg');
-  sel.innerHTML = '';
+const loadSubjects = async () => {
+  const s = $('subject');
+  const list = await api('/subjects');
+  s.innerHTML = '';
+  if (!Array.isArray(list) || !list.length) {
+    s.innerHTML = '<option value="">— none —</option>';
+    return;
+  }
+  for (const subj of list) {
+    const o = document.createElement('option');
+    o.value = subj.username;
+    o.textContent = `${subj.displayName} (${subj.username})`;
+    s.append(o);
+  }
+  // Give each wallet unit a different default subject, so issuing to unit 1 and unit 2
+  // out of the box yields two distinct PIDs (the pooling attack's precondition).
+  const idx = Math.max(0, units.findIndex(u => u.id === sel.unit));
+  s.selectedIndex = Math.min(idx, list.length - 1);
+};
+
+const loadCatalogue = async () => {
+  const res = await api('/catalogue' + (sel.issuer ? '?issuerId=' + sel.issuer : ''));
+  const s = $('cfg');
+  s.innerHTML = '';
   if (res.error || !res.configurations?.length) {
-    sel.innerHTML = '<option value="">— issuer unreachable —</option>';
+    s.innerHTML = '<option value="">— issuer unreachable —</option>';
     $('issueHint').innerHTML = `<span class="err">${esc(res.error || 'no configurations advertised')}</span>`;
     return;
   }
@@ -356,57 +665,66 @@ api('/catalogue').then(res => {
     // '_deferred' variants park issuance on the deferred endpoint.
     if ((id.includes('sd_jwt') || id.includes('sd-jwt')) && !id.endsWith('_deferred'))
       preferred = preferred || id;
-    sel.append(o);
+    s.append(o);
   }
-  if (preferred) sel.value = preferred;
-});
+  if (preferred) s.value = preferred;
+  $('issueHint').textContent = 'Headless issuance logs in as the issuer’s configured user.';
+};
 
 const runIssuance = async (autoLogin) => {
   const btn = autoLogin ? $('issue') : $('issueBrowser');
   btn.disabled = true;
   $('issueHint').textContent = 'Running…';
   try {
-    const res = await post('/issue', { credentialConfigurationId: $('cfg').value, autoLogin });
+    const res = await post('/issue', {
+      credentialConfigurationId: $('cfg').value,
+      walletUnitId: sel.unit,
+      issuerId: sel.issuer,
+      username: $('subject').value || undefined,
+      autoLogin,
+    });
     if (res.status === 'awaiting-authorization' && res.authorizationUrl)
       window.open(res.authorizationUrl, '_blank');
     $('issueHint').innerHTML = res.error
       ? `<span class="err">${esc(res.error)}</span>`
       : `<span class="badge ok">${esc(res.status)}</span>`;
-    await refreshCreds();
+    await refreshCreds(); await refreshUnits();
   } finally { btn.disabled = false; }
 };
 $('issue').onclick = () => runIssuance(true);
 $('issueBrowser').onclick = () => runIssuance(false);
 
-let selected = null;
 const refreshCreds = async () => {
-  const list = await api('/credentials');
+  const list = await api(q('/credentials'));
   const n = Array.isArray(list) ? list.length : 0;
   $('credCount').textContent = n || '';
   $('credCount2').textContent = n ? n + ' held' : '';
-  if (!n) { $('creds').innerHTML = '<li class="empty">No credentials yet.</li>'; return; }
+  if (!n) {
+    $('creds').innerHTML = '<li class="empty">No credentials in this unit yet.</li>';
+    return;
+  }
   $('creds').innerHTML = '';
   for (const c of list) {
     const li = document.createElement('li');
     li.className = 'cred';
-    li.setAttribute('aria-selected', String(c.id === selected));
+    li.setAttribute('aria-selected', String(c.id === sel.credential));
     li.innerHTML = `<b>${esc(c.configurationId)}</b>
       <small>${esc(c.format)} · ${new Date(c.issuedAt).toLocaleTimeString()}</small>`;
-    li.onclick = () => { selected = c.id; refreshCreds(); inspect(c.id); };
+    li.onclick = () => { sel.credential = c.id; refreshCreds(); inspect(c.id); };
     $('creds').append(li);
   }
 };
 
 const inspect = async (id) => {
-  const d = await api('/credentials/' + id);
+  const d = await api(q('/credentials/' + id));
   $('inspect').innerHTML = `<pre>${esc(JSON.stringify(d, null, 2))}</pre>`;
 };
 
 $('clear').onclick = async () => {
-  await post('/credentials/clear');
-  selected = null;
+  await post('/credentials/clear', { walletUnitId: sel.unit });
+  sel.credential = null;
   $('inspect').innerHTML = '<span class="empty">Select a credential to decode it.</span>';
-  refreshCreds();
+  refreshCreds(); refreshUnits();
 };
 
 /* ---------------------------------------------------------------- verifier */
@@ -428,12 +746,17 @@ const readDcql = () => {
 };
 
 $('runLoop').onclick = async () => {
-  const q = readDcql();
-  if (!q.ok) { $('vpOut').innerHTML = `<pre class="err">${esc(q.error)}</pre>`; return; }
+  const query = readDcql();
+  if (!query.ok) { $('vpOut').innerHTML = `<pre class="err">${esc(query.error)}</pre>`; return; }
   $('runLoop').disabled = true;
   $('vpOut').innerHTML = '<span class="empty">Running…</span>';
   try {
-    const res = await post('/present', { dcqlQuery: q.value, ...(selected ? { credentialId: selected } : {}) });
+    const res = await post('/present', {
+      dcqlQuery: query.value,
+      walletUnitId: sel.unit,
+      verifierId: sel.verifier,
+      ...(sel.credential ? { credentialId: sel.credential } : {}),
+    });
     $('vpOut').innerHTML =
       (res.error ? `<pre class="err">${esc(res.error)}</pre>` : `<div class="row" style="margin-bottom:9px">
          <span class="badge ok">${esc(res.status)}</span></div>`) +
@@ -442,11 +765,11 @@ $('runLoop').onclick = async () => {
 };
 
 $('openTx').onclick = async () => {
-  const q = readDcql();
-  if (!q.ok) { $('vpOut').innerHTML = `<pre class="err">${esc(q.error)}</pre>`; return; }
+  const query = readDcql();
+  if (!query.ok) { $('vpOut').innerHTML = `<pre class="err">${esc(query.error)}</pre>`; return; }
   $('openTx').disabled = true;
   try {
-    const res = await post('/verifier/transaction', { dcqlQuery: q.value });
+    const res = await post('/verifier/transaction', { dcqlQuery: query.value, verifierId: sel.verifier });
     $('vpOut').innerHTML = res.error
       ? `<pre class="err">${esc(res.error)}</pre>`
       : `<pre>${esc(JSON.stringify(res, null, 2))}</pre>
@@ -456,17 +779,74 @@ $('openTx').onclick = async () => {
 };
 
 /* --------------------------------------------------------------------- log */
-let cursor = 0, events = [];
+/**
+ * A stable colour per key thumbprint. The point is not decoration: the same hue in
+ * two different artefacts is the visual form of "this is the same key", which is the
+ * only thing that makes a binding chain checkable by eye.
+ */
+const hue = (tp) => {
+  let h = 0;
+  for (const ch of String(tp)) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return h;
+};
+const keyChip = (k) => {
+  const h = hue(k.thumbprint);
+  const short = String(k.thumbprint).slice(0, 10);
+  return `<span class="kchip" style="color:hsl(${h} 62% 45%);border-color:hsl(${h} 55% 45% / .45);
+            background:hsl(${h} 62% 45% / .10)" title="${esc(k.thumbprint)}${k.storage ? ' — ' + esc(k.storage) : ''}">
+            <i></i><span class="role">${esc(k.role)}</span>${esc(short)}</span>`;
+};
+
+let view = 'crypto';
+const state = {
+  crypto: { cursor: 0, events: [] },
+  net:    { cursor: 0, events: [] },
+};
+
 const pretty = (b) => { if (!b) return ''; try { return JSON.stringify(JSON.parse(b), null, 2); } catch { return b; } };
 
 const matches = (e) => {
-  const a = $('filterActor').value;
-  if (a && e.actor !== a) return false;
-  if ($('onlyHttp').checked && e.kind !== 'http') return false;
+  const actor = $('filterActor').value;
+  if (actor && e.actor !== actor) return false;
+  if (view === 'crypto') {
+    const op = $('filterOp').value;
+    if (op && e.operation !== op) return false;
+  } else if ($('onlyHttp').checked && e.kind !== 'http') {
+    return false;
+  }
   return true;
 };
 
-const render = (e) => {
+const renderCrypto = (e) => {
+  const d = document.createElement('details');
+  d.className = 'ev';
+  const time = (e.at || '').slice(11, 19);
+  const chips = (e.keys || []).map(keyChip).join(' ');
+  const binds = Object.entries(e.binds || {});
+
+  d.innerHTML = `<summary>
+      <span class="t">${time}</span>
+      <span class="op ${esc(e.operation)}">${esc(e.operation)}</span>
+      <span class="tag ${esc(e.actor)}">${esc(e.actor)}</span>
+      <span class="art">${esc(e.artifact)}</span>
+      ${chips}
+      <p class="sum">${esc(e.summary)}</p>
+    </summary>
+    <div class="cbody">
+      ${binds.length ? `<table class="binds">${binds.map(([k, v]) =>
+        `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</table>` : ''}
+      ${e.caveat ? `<div class="caveat"><b>Testbed caveat</b>${esc(e.caveat)}</div>` : ''}
+      ${e.header ? `<div><div class="subhead">JOSE header</div>
+        <pre>${esc(JSON.stringify(e.header, null, 2))}</pre></div>` : ''}
+      ${e.payload ? `<div><div class="subhead">Payload</div>
+        <pre>${esc(JSON.stringify(e.payload, null, 2))}</pre></div>` : ''}
+      ${e.onWire ? `<div class="t">observed on ${esc(e.onWire)} · flow ${esc(e.flowId)}</div>`
+                 : `<div class="t">flow ${esc(e.flowId)}</div>`}
+    </div>`;
+  return d;
+};
+
+const renderNet = (e) => {
   const d = document.createElement('details');
   d.className = 'ev';
   const time = (e.at || '').slice(11, 19);
@@ -489,37 +869,63 @@ const render = (e) => {
   return d;
 };
 
+const render = (e) => (view === 'crypto' ? renderCrypto(e) : renderNet(e));
+
 const repaint = () => {
   const box = $('log');
-  const shown = events.filter(matches);
-  if (!shown.length) { box.innerHTML = '<div style="padding:14px" class="empty">Nothing matches.</div>'; return; }
+  const shown = state[view].events.filter(matches);
+  if (!shown.length) {
+    box.innerHTML = `<div style="padding:14px" class="empty">${
+      state[view].events.length ? 'Nothing matches.' : 'Nothing recorded yet.'}</div>`;
+    return;
+  }
   box.innerHTML = '';
   for (const e of shown) box.append(render(e));
   if ($('follow').checked) box.scrollTop = box.scrollHeight;
 };
 
 const poll = async () => {
-  const batch = await api('/trace?since=' + cursor);
-  if (!Array.isArray(batch) || !batch.length) return;
-  const box = $('log');
-  if (!events.length) box.innerHTML = '';
-  for (const e of batch) {
-    cursor = Math.max(cursor, e.seq);
-    events.push(e);
-    if (matches(e)) box.append(render(e));
+  for (const [name, path] of [['crypto', '/crypto'], ['net', '/trace']]) {
+    const s = state[name];
+    const batch = await api(path + '?since=' + s.cursor);
+    if (!Array.isArray(batch) || !batch.length) continue;
+    for (const e of batch) {
+      s.cursor = Math.max(s.cursor, e.seq);
+      s.events.push(e);
+      if (name === view && matches(e)) {
+        if (s.events.length === batch.length) $('log').innerHTML = '';
+        $('log').append(render(e));
+      }
+    }
+    if (name === view && $('follow').checked) $('log').scrollTop = $('log').scrollHeight;
   }
-  if ($('follow').checked) box.scrollTop = box.scrollHeight;
 };
 
-$('filterActor').onchange = repaint;
-$('onlyHttp').onchange = repaint;
-$('clearLog').onclick = () => { events = []; repaint(); };
+for (const tab of document.querySelectorAll('.tab')) {
+  tab.onclick = () => {
+    view = tab.dataset.view;
+    for (const t of document.querySelectorAll('.tab'))
+      t.setAttribute('aria-current', String(t.dataset.view === view));
+    $('opFilterWrap').hidden = view !== 'crypto';
+    $('httpFilterWrap').hidden = view !== 'net';
+    repaint();
+  };
+}
 
-setRole('wallet');
-refreshCreds();
-refreshHealth();
-setInterval(poll, 800);
-setInterval(refreshHealth, 10000);
+$('filterActor').onchange = repaint;
+$('filterOp').onchange = repaint;
+$('onlyHttp').onchange = repaint;
+$('clearLog').onclick = () => { state[view].events = []; repaint(); };
+
+/* ------------------------------------------------------------------- boot */
+(async () => {
+  await Promise.all([refreshUnits(), refreshIssuers(), refreshVerifiers()]);
+  setRole('wallet');
+  await Promise.all([refreshCreds(), loadCatalogue(), loadSubjects(), refreshHealth(), refreshSession()]);
+  setInterval(poll, 800);
+  setInterval(refreshHealth, 10000);
+  setInterval(refreshSession, 4000);
+})();
 </script>
 </body>
 </html>

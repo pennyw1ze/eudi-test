@@ -10,6 +10,10 @@ import java.util.concurrent.ConcurrentHashMap
 
 @Serializable
 data class IssuanceRequest(
+    /** Which wallet unit receives the credential. Defaults to the first one. */
+    val walletUnitId: String? = null,
+    /** Which registered issuer to ask. Defaults to the first one. */
+    val issuerId: String? = null,
     /** A credential offer URI, if you already have one. */
     val offerUri: String? = null,
     /** Otherwise, ask the issuer directly for this configuration (wallet-initiated). */
@@ -24,6 +28,7 @@ data class IssuanceRequest(
 data class IssuanceResult(
     val flowId: String,
     val status: String,
+    val walletUnitId: String? = null,
     val credentials: List<StoredCredential> = emptyList(),
     /** Set when [IssuanceRequest.autoLogin] is false and a browser has to take over. */
     val authorizationUrl: String? = null,
@@ -37,8 +42,8 @@ data class IssuanceResult(
  */
 class IssuanceService(
     private val sink: TraceSink,
-    private val store: CredentialStore,
-    private val keys: WalletKeys,
+    private val scanner: CryptoScanner,
+    private val registry: Registry,
 ) {
 
     private val keyStorageStatus = KeyStorageStatusProvider(sink)
@@ -46,6 +51,7 @@ class IssuanceService(
     /** Flows paused waiting for a browser redirect, keyed by OAuth state. */
     private data class Pending(
         val flowId: String,
+        val unit: WalletUnit,
         val issuer: Issuer,
         val prepared: AuthorizationRequestPrepared,
         val configurationId: CredentialConfigurationIdentifier,
@@ -59,19 +65,24 @@ class IssuanceService(
      * needs the flow's traced HTTP client (to take a status list entry) and its flow id
      * (so the exchange lands in the right timeline).
      */
-    private fun configFor(client: HttpClient, flowId: String) = OpenId4VCIConfig(
+    private fun configFor(
+        client: HttpClient,
+        flowId: String,
+        unit: WalletUnit,
+        issuerRef: IssuerRef,
+    ) = OpenId4VCIConfig(
         // The reference issuer requires attestation-based client authentication: its
         // credential endpoint reads client_status off the access token, and only the
         // ABCA flow puts it there.
         clientAuthentication = ClientAuthentication.AttestationBased(
-            id = Env.walletClientId,
+            id = issuerRef.clientId,
             provisionClientAttestation = WalletProviderAttestation(
-                keys = keys,
+                keys = unit.keys,
                 statusProvider = keyStorageStatus,
                 client = client,
                 flowId = flowId,
                 sink = sink,
-                clientId = Env.walletClientId,
+                clientId = issuerRef.clientId,
             ),
         ),
         authFlowRedirectionURI = URI.create(Env.redirectUri),
@@ -87,7 +98,7 @@ class IssuanceService(
                 object : ProvisionDPoPSigner {
                     override val popAlgorithm: JwsAlgorithm = JwsAlgorithm("ES256")
                     override suspend fun invoke(authorizationServer: HttpsUrl): Signer<JWK> =
-                        EcSigner(keys.dpopKey, keys.dpopKey.toPublicJWK())
+                        EcSigner(unit.keys.dpopKey, unit.keys.dpopKey.toPublicJWK())
                 },
             ),
         ),
@@ -95,12 +106,15 @@ class IssuanceService(
 
     suspend fun issue(request: IssuanceRequest): IssuanceResult {
         val flowId = "iss-${UUID.randomUUID().toString().take(8)}"
-        val client = tracedHttpClient(flowId, sink, withCookies = true)
+        val unit = registry.walletUnit(request.walletUnitId)
+        val issuerRef = registry.issuer(request.issuerId)
+        val client = tracedHttpClient(flowId, sink, withCookies = true, scanner = scanner, walletUnitId = unit.id)
 
         return try {
-            sink.step(flowId, "Starting OpenID4VCI issuance")
+            sink.step(flowId, "Starting OpenID4VCI issuance as '${unit.label}' against '${issuerRef.label}'")
 
-            val (issuer, warnings) = negotiate(flowId, request, client, configFor(client, flowId))
+            val (issuer, warnings) =
+                negotiate(flowId, request, client, configFor(client, flowId, unit, issuerRef), issuerRef)
             val configurationId = chooseConfiguration(issuer, request)
 
             sink.step(
@@ -113,27 +127,36 @@ class IssuanceService(
             val authorizationUrl = prepared.authorizationCodeURL.value.toString()
 
             if (!request.autoLogin) {
-                pending[prepared.state] = Pending(flowId, issuer, prepared, configurationId, client)
+                pending[prepared.state] = Pending(flowId, unit, issuer, prepared, configurationId, client)
                 sink.step(flowId, "Waiting for the user to log in via the browser")
                 return IssuanceResult(
                     flowId = flowId,
                     status = "awaiting-authorization",
+                    walletUnitId = unit.id,
                     authorizationUrl = authorizationUrl,
                     warnings = warnings.map { it.toString() },
                 )
             }
 
+            // Which subject to authenticate as decides which PID the issuer returns, so
+            // picking a different subject per wallet unit is how two units end up with
+            // two distinct PIDs. The password follows from the chosen subject when it is
+            // one of the known sample persons.
+            val loginUser = request.username ?: issuerRef.loginUser
+            val loginPassword = request.password ?: Env.passwordFor(loginUser) ?: issuerRef.loginPassword
+
             val callback = KeycloakLogin.authorize(
                 client = client,
                 authorizationUrl = authorizationUrl,
-                username = request.username ?: Env.autoLoginUser,
-                password = request.password ?: Env.autoLoginPassword,
+                username = loginUser,
+                password = loginPassword,
                 sink = sink,
                 flowId = flowId,
             )
 
             val credentials = redeem(
                 flowId = flowId,
+                unit = unit,
                 issuer = issuer,
                 prepared = prepared,
                 configurationId = configurationId,
@@ -145,12 +168,18 @@ class IssuanceService(
             IssuanceResult(
                 flowId = flowId,
                 status = "issued",
+                walletUnitId = unit.id,
                 credentials = credentials,
                 warnings = warnings.map { it.toString() },
             )
         } catch (failure: Exception) {
             sink.error(flowId, failure.message ?: failure.toString())
-            IssuanceResult(flowId = flowId, status = "failed", error = failure.message ?: failure.toString())
+            IssuanceResult(
+                flowId = flowId,
+                status = "failed",
+                walletUnitId = unit.id,
+                error = failure.message ?: failure.toString(),
+            )
         } finally {
             // The pending case keeps the client alive for the resumed leg.
             if (pending.values.none { it.flowId == flowId }) client.close()
@@ -168,6 +197,7 @@ class IssuanceService(
         return try {
             val credentials = redeem(
                 flowId = parked.flowId,
+                unit = parked.unit,
                 issuer = parked.issuer,
                 prepared = parked.prepared,
                 configurationId = parked.configurationId,
@@ -175,10 +205,20 @@ class IssuanceService(
                 serverState = state,
                 client = parked.client,
             )
-            IssuanceResult(flowId = parked.flowId, status = "issued", credentials = credentials)
+            IssuanceResult(
+                flowId = parked.flowId,
+                status = "issued",
+                walletUnitId = parked.unit.id,
+                credentials = credentials,
+            )
         } catch (failure: Exception) {
             sink.error(parked.flowId, failure.message ?: failure.toString())
-            IssuanceResult(flowId = parked.flowId, status = "failed", error = failure.message ?: failure.toString())
+            IssuanceResult(
+                flowId = parked.flowId,
+                status = "failed",
+                walletUnitId = parked.unit.id,
+                error = failure.message ?: failure.toString(),
+            )
         } finally {
             parked.client.close()
         }
@@ -193,6 +233,7 @@ class IssuanceService(
         request: IssuanceRequest,
         client: HttpClient,
         config: OpenId4VCIConfig,
+        issuerRef: IssuerRef,
     ): IssuerNegotiationResult = when {
         request.offerUri != null -> {
             sink.step(flowId, "Resolving credential offer", actor = "issuer")
@@ -202,7 +243,7 @@ class IssuanceService(
             sink.step(flowId, "Wallet-initiated issuance; fetching issuer metadata", actor = "issuer")
             Issuer.makeWalletInitiated(
                 config,
-                CredentialIssuerId(Env.issuerBase).getOrThrow(),
+                CredentialIssuerId(issuerRef.base).getOrThrow(),
                 listOf(CredentialConfigurationIdentifier(request.credentialConfigurationId)),
                 client,
             ).getOrThrow()
@@ -225,6 +266,7 @@ class IssuanceService(
     /** Exchange the authorisation code for a token, then ask for the credential. */
     private suspend fun redeem(
         flowId: String,
+        unit: WalletUnit,
         issuer: Issuer,
         prepared: AuthorizationRequestPrepared,
         configurationId: CredentialConfigurationIdentifier,
@@ -242,7 +284,7 @@ class IssuanceService(
         // so it is taken here rather than reused across flows.
         val proof = ProofSpecification.JwtProof { nonce, _ ->
             val status = keyStorageStatus.take(client, flowId)
-            keys.proofSigner(nonce?.value, status)
+            unit.keys.proofSigner(nonce?.value, status, flowId)
         }
 
         val (_, outcome) = with(authorized) {
@@ -253,13 +295,22 @@ class IssuanceService(
             is SubmissionOutcome.Success -> {
                 val format = formatOf(issuer, configurationId)
                 outcome.credentials.map { issued ->
-                    store.add(
+                    val raw = issued.credential.toString()
+                    // The credential response is a JWE, so the scanner never saw this;
+                    // hand it the decrypted credential so the trace is complete.
+                    scanner.recordIssuedCredential(
+                        flowId = flowId,
+                        walletUnitId = unit.id,
+                        raw = raw,
+                        where = "decrypted from the issuer's credential response",
+                    )
+                    unit.store.add(
                         configurationId = configurationId.value,
                         format = format,
-                        raw = issued.credential.toString(),
+                        raw = raw,
                         issuer = issuer.credentialOffer.credentialIssuerIdentifier.value.toString(),
                     )
-                }.also { sink.step(flowId, "Stored ${it.size} credential(s) in the wallet") }
+                }.also { sink.step(flowId, "Stored ${it.size} credential(s) in wallet unit '${unit.label}'") }
             }
 
             is SubmissionOutcome.Deferred -> {
@@ -283,13 +334,14 @@ class IssuanceService(
     }
 
     /** Credential configurations the issuer supports, for the console's picker. */
-    suspend fun catalogue(): List<String> {
+    suspend fun catalogue(issuerId: String? = null): List<String> {
         val flowId = "meta-${UUID.randomUUID().toString().take(8)}"
+        val issuerRef = registry.issuer(issuerId)
         val client = tracedHttpClient(flowId, sink)
         return try {
             val (metadata, _) = Issuer.metaData(
                 client,
-                CredentialIssuerId(Env.issuerBase).getOrThrow(),
+                CredentialIssuerId(issuerRef.base).getOrThrow(),
                 IssuerMetadataPolicy.IgnoreSigned,
             )
             metadata.credentialConfigurationsSupported.keys.map { it.value }.sorted()

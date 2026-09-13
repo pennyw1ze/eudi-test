@@ -13,22 +13,30 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.json.*
 
-private val sink = TraceSink()
-private val store = CredentialStore()
-private val keys = WalletKeys()
+private val session = SessionLog()
+private val sink = TraceSink(session)
+private val crypto = CryptoSink(session)
+private val scanner = CryptoScanner(crypto)
+private val registry = Registry(crypto)
 private val verifierDriver = VerifierDriver(sink)
-private val issuanceService = IssuanceService(sink, store, keys)
-private val presentationService = PresentationService(sink, store, keys, verifierDriver)
-private val statusService = StatusService()
+private val issuanceService = IssuanceService(sink, scanner, registry)
+private val presentationService = PresentationService(sink, crypto, scanner, registry, verifierDriver)
+private val statusService = StatusService(registry)
 
 fun main() {
+    val info = session.info()
     println()
     println("  EUDI testbed listening on  ->  http://localhost:${Env.port}")
     println("      issuer   ${Env.issuerBase}")
     println("      verifier ${Env.verifierBase}")
+    println("      session  ${info.directory}")
     println()
     println("  This process stays running. Ctrl+C to stop it.")
     println()
+
+    // Final counts belong in session.json; the traces themselves are already on disk.
+    Runtime.getRuntime().addShutdownHook(Thread { session.seal() })
+
     try {
         embeddedServer(Netty, port = Env.port, host = "0.0.0.0", module = Application::testbed).start(wait = true)
     } catch (alreadyBound: java.net.BindException) {
@@ -37,6 +45,14 @@ fun main() {
         kotlin.system.exitProcess(1)
     }
 }
+
+/** Reads a string field from a posted JSON body, rejecting a blank one. */
+private fun JsonObject.required(field: String): String =
+    this[field]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        ?: error("'$field' is required")
+
+private fun JsonObject.optional(field: String): String? =
+    this[field]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
 
 fun Application.testbed() {
     install(ContentNegotiation) { json(lenientJson) }
@@ -63,17 +79,99 @@ fun Application.testbed() {
                 call.respond(
                     buildJsonObject {
                         put("publicOrigin", Env.publicOrigin)
-                        put("issuerBase", Env.issuerBase)
-                        put("verifierBase", Env.verifierBase)
                         put("walletRedirectUri", Env.redirectUri)
                         put("autoLoginUser", Env.autoLoginUser)
                     },
                 )
             }
 
+            /**
+             * The sample natural persons issuance can authenticate as. The console
+             * offers these so different wallet units can be issued different PIDs.
+             */
+            get("/subjects") {
+                call.respond(Env.sampleSubjects)
+            }
+
+            /** Where this run is being recorded, and how much of it so far. */
+            get("/session") {
+                call.respond(session.info())
+            }
+
+            /** The crypto trace as it stands on disk, for download or offline replay. */
+            get("/session/crypto-trace") {
+                call.response.header(
+                    HttpHeaders.ContentDisposition,
+                    "attachment; filename=\"crypto-trace-${session.id}.jsonl\"",
+                )
+                call.respondText(session.cryptoTraceText(), ContentType.Text.Plain)
+            }
+
+            // ------------------------------------------------------ participants
+
+            get("/wallet-units") {
+                call.respond(registry.walletUnits().map { registry.info(it) })
+            }
+
+            post("/wallet-units") {
+                val body = runCatching { call.receive<JsonObject>() }.getOrElse { buildJsonObject { } }
+                val label = body.optional("label") ?: "Wallet unit ${registry.walletUnits().size + 1}"
+                call.respond(registry.info(registry.addWalletUnit(label)))
+            }
+
+            post("/wallet-units/{id}/rename") {
+                val body = call.receive<JsonObject>()
+                val renamed = registry.renameWalletUnit(call.parameters["id"] ?: "", body.required("label"))
+                call.respond(buildJsonObject { put("renamed", renamed) })
+            }
+
+            delete("/wallet-units/{id}") {
+                call.respond(buildJsonObject { put("removed", registry.removeWalletUnit(call.parameters["id"] ?: "")) })
+            }
+
+            get("/issuers") { call.respond(registry.issuers().map { it.view() }) }
+
+            post("/issuers") {
+                val body = call.receive<JsonObject>()
+                call.respond(
+                    registry.addIssuer(
+                        label = body.required("label"),
+                        base = body.required("base"),
+                        clientId = body.optional("clientId") ?: Env.walletClientId,
+                        loginUser = body.optional("loginUser") ?: Env.autoLoginUser,
+                        loginPassword = body.optional("loginPassword") ?: Env.autoLoginPassword,
+                    ).view(),
+                )
+            }
+
+            delete("/issuers/{id}") {
+                call.respond(buildJsonObject { put("removed", registry.removeIssuer(call.parameters["id"] ?: "")) })
+            }
+
+            get("/verifiers") { call.respond(registry.verifiers()) }
+
+            post("/verifiers") {
+                val body = call.receive<JsonObject>()
+                call.respond(
+                    registry.addVerifier(
+                        label = body.required("label"),
+                        base = body.required("base"),
+                        intendedUseId = body.optional("intendedUseId") ?: Env.verifierIntendedUseId,
+                    ),
+                )
+            }
+
+            delete("/verifiers/{id}") {
+                call.respond(buildJsonObject { put("removed", registry.removeVerifier(call.parameters["id"] ?: "")) })
+            }
+
+            // ----------------------------------------------------------- issuer
+
             /** Credential configurations the issuer advertises. */
             get("/catalogue") {
-                val configurations = runCatching { issuanceService.catalogue() }
+                val configurations = runCatching {
+                    issuanceService.catalogue(call.request.queryParameters["issuerId"])
+                }
                 call.respond(
                     buildJsonObject {
                         configurations.fold(
@@ -92,7 +190,7 @@ fun Application.testbed() {
             }
 
             get("/issuer/metadata") {
-                val metadata = runCatching { statusService.issuerMetadata() }
+                val metadata = runCatching { statusService.issuerMetadata(call.request.queryParameters["issuerId"]) }
                 metadata.fold(
                     onSuccess = { call.respondText(it, ContentType.Application.Json) },
                     onFailure = {
@@ -113,11 +211,12 @@ fun Application.testbed() {
             post("/verifier/transaction") {
                 val body = runCatching { call.receive<JsonObject>() }.getOrElse { buildJsonObject { } }
                 val query = body["dcqlQuery"] as? JsonObject ?: VerifierDriver.defaultDcqlQuery()
+                val verifierRef = registry.verifier(body.optional("verifierId"))
                 val flowId = "vrf-" + java.util.UUID.randomUUID().toString().take(8)
-                val client = tracedHttpClient(flowId, sink)
+                val client = tracedHttpClient(flowId, sink, scanner = scanner)
                 try {
                     val nonce = java.util.UUID.randomUUID().toString()
-                    val transaction = verifierDriver.initTransaction(client, flowId, query, nonce)
+                    val transaction = verifierDriver.initTransaction(client, flowId, query, nonce, verifierRef)
                     call.respond(
                         buildJsonObject {
                             put("flowId", flowId)
@@ -140,9 +239,13 @@ fun Application.testbed() {
 
             /** The intended uses the verifier offers, for the verifier panel's picker. */
             get("/verifier/intended-uses") {
+                val verifierRef = registry.verifier(call.request.queryParameters["verifierId"])
                 val client = plainHttpClient()
                 try {
-                    call.respondText(verifierDriver.intendedUses(client), ContentType.Application.Json)
+                    call.respondText(
+                        verifierDriver.intendedUses(client, verifierRef),
+                        ContentType.Application.Json,
+                    )
                 } catch (failure: Exception) {
                     call.respond(
                         HttpStatusCode.BadGateway,
@@ -156,10 +259,11 @@ fun Application.testbed() {
             /** Whatever the verifier has received for a transaction so far. */
             get("/verifier/transaction/{id}") {
                 val id = call.parameters["id"] ?: ""
+                val verifierRef = registry.verifier(call.request.queryParameters["verifierId"])
                 val flowId = "vrf-read"
-                val client = tracedHttpClient(flowId, sink)
+                val client = tracedHttpClient(flowId, sink, scanner = scanner)
                 try {
-                    call.respond(verifierDriver.walletResponse(client, flowId, id))
+                    call.respond(verifierDriver.walletResponse(client, flowId, id, verifierRef))
                 } finally {
                     client.close()
                 }
@@ -188,11 +292,13 @@ fun Application.testbed() {
             // ------------------------------------------------------- credentials
 
             get("/credentials") {
-                call.respond(store.all())
+                val unit = registry.walletUnit(call.request.queryParameters["walletUnitId"])
+                call.respond(unit.store.all())
             }
 
             get("/credentials/{id}") {
-                val credential = store.get(call.parameters["id"] ?: "")
+                val unit = registry.walletUnit(call.request.queryParameters["walletUnitId"])
+                val credential = unit.store.get(call.parameters["id"] ?: "")
                 if (credential == null) {
                     call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "no such credential") })
                 } else {
@@ -201,12 +307,13 @@ fun Application.testbed() {
             }
 
             delete("/credentials/{id}") {
-                val removed = store.remove(call.parameters["id"] ?: "")
-                call.respond(buildJsonObject { put("removed", removed) })
+                val unit = registry.walletUnit(call.request.queryParameters["walletUnitId"])
+                call.respond(buildJsonObject { put("removed", unit.store.remove(call.parameters["id"] ?: "")) })
             }
 
             post("/credentials/clear") {
-                store.clear()
+                val body = runCatching { call.receive<JsonObject>() }.getOrElse { buildJsonObject { } }
+                registry.walletUnit(body.optional("walletUnitId")).store.clear()
                 call.respond(buildJsonObject { put("cleared", true) })
             }
 
@@ -217,8 +324,21 @@ fun Application.testbed() {
                 call.respond(presentationService.present(request))
             }
 
-            // ------------------------------------------------------------- trace
+            // ------------------------------------------------------------ traces
 
+            /** The cryptographic timeline: who proved what, over which key. */
+            get("/crypto") {
+                val since = call.request.queryParameters["since"]?.toLongOrNull() ?: 0L
+                val flowId = call.request.queryParameters["flowId"]
+                call.respond(crypto.since(since, flowId))
+            }
+
+            /** Every key seen so far, so the console can colour the binding chain. */
+            get("/crypto/keys") {
+                call.respond(crypto.keys())
+            }
+
+            /** The network timeline, kept as the underlying evidence for the above. */
             get("/trace") {
                 val since = call.request.queryParameters["since"]?.toLongOrNull() ?: 0L
                 val flowId = call.request.queryParameters["flowId"]

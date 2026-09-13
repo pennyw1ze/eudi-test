@@ -8,10 +8,11 @@ node_modules/
 dist/
 *.class
 *.jar
-!gradle/wrapper/gradle-wrapper.jar
+!**/gradle/wrapper/gradle-wrapper.jar
 
-# runtime state
+# runtime state (per-run crypto + network traces, participant list)
 /runs/
+runs/
 *.log
 .env.local
 
@@ -24,3 +25,6 @@ config/status-list/app.zip
 diag.txt
 issuer.log
 keycloak.log
+
+# IDE/compiled output
+wallet-core/bin/

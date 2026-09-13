@@ -60,20 +60,29 @@ class EcSigner<PUB>(
 }
 
 /**
- * The wallet's key material.
+ * One wallet unit's key material.
  *
  * [deviceKey] is the key a credential gets bound to and that later signs key-binding
  * JWTs when presenting. [attestationKey] stands in for the key a real wallet
  * provider would use to attest that the device key lives in secure hardware.
+ *
+ * Every unit gets its own set. That is what makes two units genuinely distinct holders
+ * rather than two labels over one identity: a credential bound to one unit's device key
+ * cannot be presented by the other, and the trace shows exactly why.
  */
 class WalletKeys(
-    val deviceKey: ECKey = generateKey("device"),
-    private val attestationKey: ECKey = generateKey("wallet-provider"),
-    /** Binds access tokens to this wallet via DPoP; the sample realm requires it. */
-    val dpopKey: ECKey = generateKey("dpop"),
-    /** The key the client attestation binds to, used to sign its proof of possession. */
-    val clientPopKey: ECKey = generateKey("client-pop"),
+    val unitId: String = "default",
+    private val crypto: CryptoSink? = null,
 ) {
+
+    val deviceKey: ECKey = generateKey("device")
+    private val attestationKey: ECKey = generateKey("wallet-provider")
+
+    /** Binds access tokens to this wallet via DPoP; the sample realm requires it. */
+    val dpopKey: ECKey = generateKey("dpop")
+
+    /** The key the client attestation binds to, used to sign its proof of possession. */
+    val clientPopKey: ECKey = generateKey("client-pop")
 
     /**
      * The certificate the issuer sees in the attestation's `x5c` header.
@@ -84,6 +93,49 @@ class WalletKeys(
      */
     val attestationCertificate: X509Certificate = selfSign(attestationKey)
 
+    init {
+        // Key generation never reaches the network, so unlike every other operation in
+        // the crypto trace it has to be reported from here.
+        crypto?.record(
+            flowId = "unit:$unitId",
+            operation = "keygen",
+            actor = "wallet",
+            artifact = "Wallet unit key material",
+            summary = "Four P-256 key pairs generated for this wallet unit: the device key a " +
+                "credential will be bound to, the DPoP key that binds access tokens, the key the " +
+                "client attestation confirms, and the key the testbed signs attestations with",
+            algorithm = "ES256 (P-256)",
+            keys = describe(),
+            binds = mapOf(
+                "wallet unit" to unitId,
+                "attestation certificate" to attestationCertificate.subjectX500Principal.name,
+            ),
+            caveat = "Generated in software and held in this JVM's heap. On a certified wallet unit " +
+                "these keys would be created inside a WSCD and be non-extractable; here they can be " +
+                "read, copied and used from anywhere, which no counterparty can detect.",
+            walletUnitId = unitId,
+        )
+    }
+
+    /** The unit's public keys, by role, for the console's key panel and the trace. */
+    fun describe(): List<KeyRef> = listOf(
+        "device" to deviceKey,
+        "dpop" to dpopKey,
+        "client-pop" to clientPopKey,
+        "wallet-provider" to attestationKey,
+    ).mapNotNull { (role, key) ->
+        runCatching {
+            KeyRef(
+                role = role,
+                thumbprint = key.computeThumbprint().toString(),
+                kty = key.keyType.value,
+                crv = key.curve.name,
+                kid = key.keyID,
+                storage = "software (JVM heap)",
+            )
+        }.getOrNull()
+    }
+
     /**
      * Mints the key attestation that OpenID4VCI 1.0 requires in the `key_attestation`
      * header of a JWT proof.
@@ -93,7 +145,11 @@ class WalletKeys(
      * one of iat, exp, attested_keys, key_storage, user_authentication, certification or
      * key_storage_status and it rejects the attestation.
      */
-    fun keyAttestation(nonce: String? = null, keyStorageStatus: KeyStorageStatusEntry): KeyAttestationJWT {
+    fun keyAttestation(
+        nonce: String? = null,
+        keyStorageStatus: KeyStorageStatusEntry,
+        flowId: String? = null,
+    ): KeyAttestationJWT {
         val now = Instant.now()
         val expiry = now.plusSeconds(300)
 
@@ -131,6 +187,41 @@ class WalletKeys(
             claims,
         ).apply { sign(ECDSASigner(attestationKey)) }
 
+        // The credential request that carries this attestation is encrypted to the
+        // issuer, so the wire never shows it. Recorded here or not at all.
+        if (flowId != null) {
+            crypto?.record(
+                flowId = flowId,
+                operation = "sign",
+                actor = "wallet-provider",
+                artifact = "Key attestation",
+                summary = "The wallet provider asserts the assurance level of the device key: where it " +
+                    "is stored and how the user is authenticated before it is used",
+                algorithm = "ES256",
+                keys = describe().filter { it.role == "device" || it.role == "wallet-provider" },
+                binds = buildMap {
+                    put("attested keys", "1")
+                    put("key_storage", "iso_18045_high")
+                    put("user_authentication", "iso_18045_high")
+                    put(
+                        "status reference",
+                        "${keyStorageStatus.uri}#${keyStorageStatus.index}",
+                    )
+                    if (nonce != null) put("issuer nonce", nonce)
+                    put("x5c subject", attestationCertificate.subjectX500Principal.name)
+                },
+                header = lenientJson.parseToJsonElement(jwt.header.toString()),
+                payload = lenientJson.parseToJsonElement(claims.toString()),
+                onWire = "sealed inside the encrypted credential request",
+                caveat = "Asserts iso_18045_high for both key storage and user authentication while the " +
+                    "private key is held in this JVM's heap and no user authentication happens at all. " +
+                    "Signed by the testbed itself under a self-signed certificate; the issuer accepts it " +
+                    "only because its trust validator is switched off. No protocol check can detect this.",
+                compact = jwt.serialize(),
+                walletUnitId = unitId,
+            )
+        }
+
         return KeyAttestationJWT(jwt)
     }
 
@@ -139,8 +230,35 @@ class WalletKeys(
         SignedJWT(header, claims).apply { sign(ECDSASigner(attestationKey)) }
 
     /** The signer the issuance flow hands to `ProofSpecification.JwtProof`. */
-    fun proofSigner(nonce: String? = null, keyStorageStatus: KeyStorageStatusEntry): Signer<KeyAttestationJWT> =
-        EcSigner(deviceKey, keyAttestation(nonce, keyStorageStatus))
+    fun proofSigner(
+        nonce: String? = null,
+        keyStorageStatus: KeyStorageStatusEntry,
+        flowId: String? = null,
+    ): Signer<KeyAttestationJWT> {
+        val attestation = keyAttestation(nonce, keyStorageStatus, flowId)
+        // The library assembles and signs the proof JWT itself, so the serialized form
+        // is not available here; the nonce and the signing key are, and they are what
+        // the proof actually commits to.
+        if (flowId != null) {
+            crypto?.record(
+                flowId = flowId,
+                operation = "sign",
+                actor = "wallet",
+                artifact = "Credential request proof (JWT)",
+                summary = "Wallet proves control of the key the credential will be bound to, over a " +
+                    "nonce the issuer chose so the proof cannot be pre-computed or replayed",
+                algorithm = "ES256",
+                keys = describe().filter { it.role == "device" },
+                binds = buildMap {
+                    if (nonce != null) put("issuer nonce (c_nonce)", nonce)
+                    put("key attestation", "attached in the proof header")
+                },
+                onWire = "sealed inside the encrypted credential request",
+                walletUnitId = unitId,
+            )
+        }
+        return EcSigner(deviceKey, attestation)
+    }
 
     companion object {
         /** A throwaway self-signed certificate over [key], for the x5c header. */

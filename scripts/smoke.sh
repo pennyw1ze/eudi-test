@@ -13,7 +13,7 @@ curl -fsS "$BASE/api/health" >/dev/null || fail "testbed is not answering on $BA
 
 say "Reading the issuer catalogue"
 catalogue=$(curl -fsS "$BASE/api/catalogue")
-echo "$catalogue" | head -c 400; echo
+printf '%.400s\n' "$catalogue"
 # Skip the *_deferred variants: they park on the deferred endpoint, which is not wired up.
 configuration=$(echo "$catalogue" \
   | grep -oE '"[^"]*sd_jwt[^"]*"' | tr -d '"' | grep -v '_deferred$' | head -1 || true)
@@ -24,13 +24,20 @@ say "Issuing $configuration into the wallet"
 issued=$(curl -fsS -X POST "$BASE/api/issue" \
   -H 'content-type: application/json' \
   -d "{\"credentialConfigurationId\":\"$configuration\",\"autoLogin\":true}")
-echo "$issued" | head -c 600; echo
+printf '%.600s\n' "$issued"
 echo "$issued" | grep -q '"status":"issued"' || fail "issuance failed"
 
-say "Presenting the credential to the verifier"
-presented=$(curl -fsS -X POST "$BASE/api/present" \
-  -H 'content-type: application/json' -d '{}')
-echo "$presented" | head -c 800; echo
+# The reference issuer sets nbf to iat + 20s, so a credential presented immediately is
+# correctly refused with "SD-JWT is not active yet". Retry until it becomes valid.
+say "Presenting the credential to the verifier (waiting out the 20s validity window)"
+for attempt in $(seq 1 15); do
+  presented=$(curl -fsS -X POST "$BASE/api/present" \
+    -H 'content-type: application/json' -d '{}')
+  echo "$presented" | grep -q '"status":"presented"' && break
+  echo "$presented" | grep -q 'not active yet' || break
+  sleep 2
+done
+printf '%.800s\n' "$presented"
 echo "$presented" | grep -q '"status":"presented"' || fail "presentation failed"
 
 say "Smoke test passed"

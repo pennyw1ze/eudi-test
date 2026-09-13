@@ -13,6 +13,15 @@ DOCKER=${DOCKER:-docker}
 
 command -v ${DOCKER%% *} >/dev/null && ok "docker present" || bad "docker is not installed"
 
+if docker compose version >/dev/null 2>&1; then
+  ok "docker compose present"
+else
+  bad "docker compose plugin (v2) is not installed"
+  echo "        install it via your package manager, e.g.:"
+  echo "          Arch:           sudo pacman -S docker-compose"
+  echo "          Debian/Ubuntu:  sudo apt install docker-compose-plugin"
+fi
+
 if $DOCKER info >/dev/null 2>&1; then
   ok "docker daemon reachable as '$DOCKER'"
 elif sudo -n docker info >/dev/null 2>&1; then

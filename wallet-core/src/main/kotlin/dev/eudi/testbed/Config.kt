@@ -4,6 +4,18 @@ package dev.eudi.testbed
  * Runtime configuration. Everything has a default that matches the docker-compose
  * stack, so the wallet runs with no environment set at all.
  */
+/**
+ * A sample natural person the wallet can authenticate as during issuance. The chosen
+ * subject decides which PID the issuer returns.
+ */
+@kotlinx.serialization.Serializable
+data class SampleSubject(
+    val username: String,
+    /** Not serialised back to the console; the API only exposes username + displayName. */
+    @kotlinx.serialization.Transient val password: String = "password",
+    val displayName: String,
+)
+
 object Env {
     private fun env(key: String): String? = System.getenv(key)?.takeIf { it.isNotBlank() }
 
@@ -55,6 +67,29 @@ object Env {
     val autoLoginPassword: String = env("AUTO_LOGIN_PASSWORD") ?: "password"
 
     /**
+     * The sample natural persons available in the upstream Keycloak realm.
+     *
+     * The issuer builds the PID from the *authenticated* user's Keycloak attributes
+     * (see the issuer's GetPidDataFromKeyCloak), so which subject a wallet unit logs in
+     * as is exactly what determines the PID it receives. Issuing to different units under
+     * different subjects is how two units end up holding two distinct PIDs — the
+     * precondition for the presentation-time pooling attack, where two holders each
+     * contribute a credential of their own.
+     *
+     * `tneal` ships in the upstream realm; the rest are added by
+     * config/keycloak/pid-issuer-realm-users-1.json and share the password "password".
+     */
+    val sampleSubjects: List<SampleSubject> = listOf(
+        SampleSubject(autoLoginUser, autoLoginPassword, "Tyler Neal"),
+        SampleSubject("abianchi", "password", "Anna Bianchi"),
+        SampleSubject("jkowalski", "password", "Jan Kowalski"),
+    )
+
+    /** The password to log [username] in with, if it is one of the known sample subjects. */
+    fun passwordFor(username: String): String? =
+        sampleSubjects.firstOrNull { it.username == username }?.password
+
+    /**
      * The status list service that backs the key attestation's key_storage_status.
      * These match the API key and country configured for the containerised service.
      */
@@ -66,4 +101,12 @@ object Env {
      * verifier ships one, id "1" ("Person identification").
      */
     val verifierIntendedUseId: String = env("VERIFIER_INTENDED_USE_ID") ?: "1"
+
+    /**
+     * Where per-run trace directories and the participant list are written.
+     *
+     * Relative to the process working directory, which `make testbed` sets to the repo
+     * root. Already git-ignored.
+     */
+    val sessionRoot: String = env("SESSION_ROOT") ?: "runs"
 }

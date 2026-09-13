@@ -34,13 +34,19 @@ data class TraceEvent(
  * Bounded, in-memory event log. The console polls it with a cursor, so events are
  * never removed while a flow is still being read, only once the buffer wraps.
  */
-class TraceSink(private val capacity: Int = 2000) {
+class TraceSink(
+    private val session: SessionLog,
+    private val capacity: Int = 2000,
+) {
     private val seq = AtomicLong(0)
     private val events = ArrayDeque<TraceEvent>()
 
-    fun emit(event: TraceEvent) = synchronized(events) {
-        events.addLast(event)
-        while (events.size > capacity) events.removeFirst()
+    fun emit(event: TraceEvent) {
+        synchronized(events) {
+            events.addLast(event)
+            while (events.size > capacity) events.removeFirst()
+        }
+        session.appendNetwork(event)
     }
 
     fun next(): Long = seq.incrementAndGet()
@@ -90,6 +96,9 @@ internal fun actorOf(url: String): String = when {
 class TracingInterceptor(
     private val flowId: String,
     private val sink: TraceSink,
+    /** Reads the cryptographic layer back out of the same exchange. */
+    private val scanner: CryptoScanner? = null,
+    private val walletUnitId: String? = null,
     private val maxBody: Long = 256L * 1024,
 ) : Interceptor {
 
@@ -122,6 +131,10 @@ class TracingInterceptor(
             throw failure
         }
 
+        val requestHeaders = request.headers.toMap()
+        val responseHeaders = response.headers.toMap()
+        val responseBody = runCatching { response.peekBody(maxBody).string() }.getOrNull()
+
         sink.emit(
             TraceEvent(
                 seq = sink.next(),
@@ -133,10 +146,24 @@ class TracingInterceptor(
                 url = url,
                 status = response.code,
                 durationMs = (System.nanoTime() - startedAt) / 1_000_000,
-                requestHeaders = request.headers.toMap(),
+                requestHeaders = requestHeaders,
                 requestBody = requestBody,
-                responseHeaders = response.headers.toMap(),
-                responseBody = runCatching { response.peekBody(maxBody).string() }.getOrNull(),
+                responseHeaders = responseHeaders,
+                responseBody = responseBody,
+            ),
+        )
+
+        scanner?.scan(
+            CryptoScanner.Exchange(
+                flowId = flowId,
+                walletUnitId = walletUnitId,
+                method = request.method,
+                url = url,
+                status = response.code,
+                requestHeaders = requestHeaders,
+                requestBody = requestBody,
+                responseHeaders = responseHeaders,
+                responseBody = responseBody,
             ),
         )
         return response

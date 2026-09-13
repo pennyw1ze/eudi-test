@@ -1,0 +1,149 @@
+{
+  "realm": "pid-issuer-realm",
+  "users": [
+    {
+      "id": "8f1e2c3a-1111-4a2b-9c4d-0a1b2c3d4e01",
+      "username": "abianchi",
+      "enabled": true,
+      "totp": false,
+      "email": "anna.bianchi@example.com",
+      "emailVerified": true,
+      "firstName": "Anna",
+      "lastName": "Bianchi",
+      "attributes": {
+        "gender": [
+          "2"
+        ],
+        "gender_as_string": [
+          "female"
+        ],
+        "birthdate": [
+          "1990-07-23"
+        ],
+        "street": [
+          "Via Roma"
+        ],
+        "address_house_number": [
+          "42"
+        ],
+        "locality": [
+          "Milano"
+        ],
+        "region": [
+          "Lombardia"
+        ],
+        "postal_code": [
+          "20121"
+        ],
+        "country": [
+          "IT"
+        ],
+        "birth_country": [
+          "IT"
+        ],
+        "birth_city": [
+          "Milano"
+        ],
+        "birth_place": [
+          "Milano"
+        ],
+        "nationality": [
+          "IT"
+        ],
+        "birth_family_name": [
+          "Bianchi"
+        ],
+        "birth_given_name": [
+          "Anna"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "userLabel": "My password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "disableableCredentialTypes": [],
+      "requiredActions": [],
+      "realmRoles": [
+        "eid-holder-natural-person"
+      ],
+      "notBefore": 0,
+      "groups": []
+    },
+    {
+      "id": "8f1e2c3a-2222-4a2b-9c4d-0a1b2c3d4e02",
+      "username": "jkowalski",
+      "enabled": true,
+      "totp": false,
+      "email": "jan.kowalski@example.com",
+      "emailVerified": true,
+      "firstName": "Jan",
+      "lastName": "Kowalski",
+      "attributes": {
+        "gender": [
+          "1"
+        ],
+        "gender_as_string": [
+          "male"
+        ],
+        "birthdate": [
+          "1978-11-02"
+        ],
+        "street": [
+          "ul. Marszalkowska"
+        ],
+        "address_house_number": [
+          "15"
+        ],
+        "locality": [
+          "Warszawa"
+        ],
+        "region": [
+          "Mazowieckie"
+        ],
+        "postal_code": [
+          "00-624"
+        ],
+        "country": [
+          "PL"
+        ],
+        "birth_country": [
+          "PL"
+        ],
+        "birth_city": [
+          "Krakow"
+        ],
+        "birth_place": [
+          "Krakow"
+        ],
+        "nationality": [
+          "PL"
+        ],
+        "birth_family_name": [
+          "Kowalski"
+        ],
+        "birth_given_name": [
+          "Jan"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "userLabel": "My password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "disableableCredentialTypes": [],
+      "requiredActions": [],
+      "realmRoles": [
+        "eid-holder-natural-person"
+      ],
+      "notBefore": 0,
+      "groups": []
+    }
+  ]
+}

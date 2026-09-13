@@ -29,16 +29,11 @@ class VerifierDriver(private val sink: TraceSink) {
         flowId: String,
         dcqlQuery: JsonObject,
         nonce: String,
-        /**
-         * Names one of the verifier's configured Wallet Relying Party Intended Uses,
-         * whose registration certificate is attached to the request. The reference
-         * verifier refuses a transaction without one ("MissingRegistrationCertificate").
-         */
-        intendedUseId: String = Env.verifierIntendedUseId,
+        verifier: VerifierRef,
     ): InitTransactionResponse {
-        sink.step(flowId, "Relying party opens a presentation transaction", actor = "verifier")
+        sink.step(flowId, "Relying party '${verifier.label}' opens a presentation transaction", actor = "verifier")
 
-        val response = client.post("${Env.verifierBase}/ui/presentations") {
+        val response = client.post("${verifier.base}/ui/presentations") {
             contentType(ContentType.Application.Json)
             accept(ContentType.Application.Json)
             setBody(
@@ -49,7 +44,11 @@ class VerifierDriver(private val sink: TraceSink) {
                     put("request_uri_method", "get")
                     put("response_mode", "direct_post")
                     put("profile", "openid4vp")
-                    put("intended_use_id", intendedUseId)
+                    // Names one of the verifier's configured Wallet Relying Party Intended
+                    // Uses, whose registration certificate is attached to the request. The
+                    // reference verifier refuses a transaction without one
+                    // ("MissingRegistrationCertificate").
+                    put("intended_use_id", verifier.intendedUseId)
                 },
             )
         }
@@ -60,8 +59,8 @@ class VerifierDriver(private val sink: TraceSink) {
     }
 
     /** The intended uses the verifier has configured, each with its registration certificate. */
-    suspend fun intendedUses(client: HttpClient): String =
-        client.get("${'$'}{Env.verifierBase}/ui/intended-uses") {
+    suspend fun intendedUses(client: HttpClient, verifier: VerifierRef): String =
+        client.get("${verifier.base}/ui/intended-uses") {
             accept(ContentType.Application.Json)
         }.bodyAsText()
 
@@ -70,9 +69,10 @@ class VerifierDriver(private val sink: TraceSink) {
         client: HttpClient,
         flowId: String,
         transactionId: String,
+        verifier: VerifierRef,
     ): JsonElement {
         sink.step(flowId, "Relying party reads the wallet response", actor = "verifier")
-        val response = client.get("${Env.verifierBase}/ui/presentations/$transactionId") {
+        val response = client.get("${verifier.base}/ui/presentations/$transactionId") {
             accept(ContentType.Application.Json)
         }
         val text = response.bodyAsText()

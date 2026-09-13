@@ -25,7 +25,7 @@ data class ComponentStatus(
  * Any HTTP response counts as up: several of these endpoints answer 400 or 404 to a bare
  * probe, which still proves the service is listening behind the gateway.
  */
-class StatusService {
+class StatusService(private val registry: Registry) {
 
     private data class Probe(
         val id: String,
@@ -34,22 +34,32 @@ class StatusService {
         val method: HttpMethod = HttpMethod.Get,
     )
 
-    private val probes = listOf(
-        Probe("gateway", "Gateway", "${Env.publicOrigin}/"),
-        Probe("issuer", "Issuer", "${Env.issuerBase}/.well-known/openid-credential-issuer"),
-        Probe(
-            "authorization-server",
-            "Authorisation server",
-            "${Env.publicOrigin}/idp/realms/pid-issuer-realm/.well-known/openid-configuration",
-        ),
-        Probe("status-list", "Status list", "${Env.publicOrigin}/token_status_list/"),
-        Probe("verifier", "Verifier", "${Env.verifierBase}/ui/presentations", HttpMethod.Post),
-    )
+    /**
+     * Rebuilt per call rather than cached, so an issuer or verifier added from the
+     * console appears in the status strip without a restart.
+     */
+    private fun probes(): List<Probe> = buildList {
+        add(Probe("gateway", "Gateway", "${Env.publicOrigin}/"))
+        add(
+            Probe(
+                "authorization-server",
+                "Authorisation server",
+                "${Env.publicOrigin}/idp/realms/pid-issuer-realm/.well-known/openid-configuration",
+            ),
+        )
+        add(Probe("status-list", "Status list", "${Env.publicOrigin}/token_status_list/"))
+        registry.issuers().forEach {
+            add(Probe(it.id, it.label, "${it.base}/.well-known/openid-credential-issuer"))
+        }
+        registry.verifiers().forEach {
+            add(Probe(it.id, it.label, "${it.base}/ui/presentations", HttpMethod.Post))
+        }
+    }
 
     suspend fun snapshot(): List<ComponentStatus> = coroutineScope {
         val client = plainHttpClient()
         try {
-            probes.map { probe ->
+            probes().map { probe ->
                 async {
                     val outcome = runCatching {
                         client.request(probe.url) {
@@ -88,10 +98,11 @@ class StatusService {
     }
 
     /** The issuer's metadata, shown verbatim on the issuer panel. */
-    suspend fun issuerMetadata(): String {
+    suspend fun issuerMetadata(issuerId: String? = null): String {
+        val issuer = registry.issuer(issuerId)
         val client = plainHttpClient()
         return try {
-            client.get("${Env.issuerBase}/.well-known/openid-credential-issuer") {
+            client.get("${issuer.base}/.well-known/openid-credential-issuer") {
                 accept(ContentType.Application.Json)
             }.bodyAsText()
         } finally {

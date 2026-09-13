@@ -49,6 +49,12 @@ application {
     applicationDefaultJvmArgs = listOf("-Xmx320m")
 }
 
+tasks.named<JavaExec>("run") {
+    // Session traces and the participant list are written relative to the working
+    // directory; the repo root is where .gitignore already expects `runs/`.
+    workingDir = projectDir.parentFile
+}
+
 tasks.test {
     useJUnitPlatform()
 }

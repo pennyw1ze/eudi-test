@@ -22,7 +22,8 @@ the URLs it discovers in metadata verbatim — as a real wallet would.
 
 ## Requirements
 
-Docker, JDK 17+ (21 recommended), ~3 GB free RAM. Run `make doctor` to check.
+Docker, Docker Compose v2 (the `docker compose` plugin), JDK 17+ (21 recommended), ~3 GB
+free RAM. Run `make doctor` to check.
 
 ## Start
 
@@ -40,8 +41,25 @@ which services are reachable.
 
 # Guide
 
-The console drives one credential through its whole life. The **Protocol log** at the
-bottom records every HTTP exchange as you go — expand any row to see headers and bodies.
+The console drives one credential through its whole life. The **Cryptographic trace** at
+the bottom records every proof, signature and disclosure as you go.
+
+## 0. Participants
+
+The sidebar lists the three kinds of participant, each with a **+** button.
+
+- **Wallet units** — a unit is one holder: its own device, DPoP, client-PoP and
+  attestation keys, and its own credential store. Adding one generates fresh key
+  material. Because a credential is bound to a device key through `cnf`, a credential
+  issued to one unit cannot be presented by another; running two side by side is the
+  cheapest way to watch that binding hold.
+- **Issuers** — a credential issuer identifier plus the client id and login the wallet
+  should use against it.
+- **Verifiers** — a Verifier API base plus the intended use to present under.
+
+Issuers and verifiers persist to `runs/participants.json` so a restart keeps them.
+Wallet units do not: they are key material, and resurrecting yesterday's keys would
+quietly undo the fresh session each trace file records.
 
 ## 1. Issue a credential
 
@@ -87,20 +105,61 @@ Edit the **DCQL query** to say which claims you want — the default asks for
 - **Open transaction only** stops after the request and shows the
   `authorizationRequestUri`, so a real phone wallet can pick it up instead.
 
-Narrow the query to a single claim and present again — the inspector and log show only
-that claim being disclosed. That is selective disclosure working.
+Narrow the query to a single claim and present again — the trace shows only that claim
+being released and counts the rest as withheld digests. That is selective disclosure
+working.
+
+## 4. Read the cryptographic trace
+
+The panel at the bottom has two tabs. **Network** is the raw HTTP evidence. **Cryptographic
+trace** is the one to read: it answers who proved what to whom, over which key, bound to
+which values — the layer the protocol actually rests on.
+
+Each row carries an operation (`keygen`, `sign`, `verify`, `disclose`, `bind`), the party
+that performed it, the artefact under its specification name, and the keys involved as
+coloured thumbprint chips. **The same colour is the same key.** That is what makes the
+binding chain checkable by eye: follow one colour and you see the device key generated,
+attested by the wallet provider, proven to the issuer, written into the credential's
+`cnf.jwk`, and finally signing the key binding JWT. Expand a row for what the artefact
+commits to, its JOSE header and payload.
+
+Rows whose claim outruns the testbed's real assurance carry a **testbed caveat** saying so
+— the key attestation asserting `iso_18045_high` over a key in JVM heap is the one that
+matters. See the LoA note under Known issues.
+
+Most events are recovered from the wire, so they record what the counterparty actually
+received. Two exchanges are exceptions: key generation never leaves the process, and the
+reference issuer encrypts both the credential request and the credential response
+(`ECDH-ES` + `A128GCM`). Those arrive as `Encrypted request/response (JWE)` rows, and the
+proof, key attestation and credential sealed inside them are recorded from within the
+wallet so the trace has no silent gap where its most important step should be.
+
+## 5. Keep the trace
+
+Every run writes a fresh directory under `runs/`:
+
+```
+runs/<timestamp>-<id>/
+  session.json         when the run started, where its files are, how many events
+  crypto-trace.jsonl   one cryptographic event per line
+  network-trace.jsonl  one HTTP exchange per line
+```
+
+JSON Lines, appended as events happen — a run that is killed still leaves everything it
+observed, and the files are greppable without a parser. The sidebar shows the current
+directory and links the crypto trace for download; `GET /api/session` reports the same.
 
 ---
 
 ## Known issues
 
-- **Presentation is not yet confirmed end to end.** Issuance works: the wallet holds a
-  real PID (`urn:eudi:pid:1`, 26 disclosures) signed by the reference issuer. The wallet
-  also resolves the presentation request, discloses only the requested claims and posts a
-  `vp_token`. The verifier initially rejected it because its attestation classification
-  table ships empty (`Could not find Attestation Classification for vct 'urn:eudi:pid:1'`);
-  that is now configured in `docker-compose.yml`, but the closed loop has not been
-  re-verified since.
+- **A credential cannot be presented for the first 20 seconds after it is issued.** The
+  reference issuer sets `nbf` to `iat + 20s`, so an immediate presentation is correctly
+  rejected with `ContainsInvalidJwt: SD-JWT is not active yet`. Wait, then present, and
+  the loop closes: verifier accepts the `vp_token`. This was previously recorded here as
+  "presentation not confirmed end to end" and blamed on the attestation classification
+  table — that table did need configuring (it is now, in `docker-compose.yml`), but the
+  remaining failure was the validity window.
 - **Presentation covers SD-JWT VC only.** Presenting an `mso_mdoc` needs a signed
   `DeviceResponse` over a session transcript, which is not implemented. Such a request is
   reported as unsupported. mdocs can still be issued, stored and inspected.
@@ -111,7 +170,9 @@ that claim being disclosed. That is selective disclosure working.
   from its wallet provider after device attestation. The testbed signs its own and
   asserts `iso_18045_high` while holding keys in JVM memory. Nothing in the protocol can
   detect this, which is what makes a software wallet possible at all — but the assertion
-  is untrue, and none of it should travel beyond this harness.
+  is untrue, and none of it should travel beyond this harness. Every affected row in the
+  cryptographic trace says so in its caveat; the honest way to read the trace is that it
+  proves the protocol, not the assurance level.
 - **Two upstream files needed fixing** to make any of this work, both patched in
   `config/status-list/`: the status list endpoint compared the `Accept` header with `==`,
   returning 406 to every real client, and its URIs pointed at `https://localhost`, which
@@ -138,7 +199,24 @@ config/              issuer env, status list config and Dockerfile
 gateway/             haproxy config + generated TLS certificate
 scripts/             doctor.sh, smoke.sh
 vendor/              upstream repositories (git-ignored, never patched)
+runs/                per-run traces + participants.json (git-ignored)
 wallet-core/         the wallet, the tracer and the console UI
+```
+
+Inside `wallet-core/src/main/kotlin/dev/eudi/testbed/`:
+
+```
+Registry.kt       wallet units, issuers and verifiers
+Keys.kt           one unit's key material; mints the key attestation
+Issuance.kt       OpenID4VCI in the holder role
+Presentation.kt   OpenID4VP in the holder role
+Verifier.kt       the relying party side, driven through the Verifier API
+Crypto.kt         the cryptographic event model and its in-memory log
+Jose.kt           JOSE and SD-JWT decoding, RFC 7638 thumbprints
+CryptoScanner.kt  recovers the cryptographic layer from the exchanges on the wire
+Trace.kt          the network log and the OkHttp interceptor that feeds both
+Session.kt        the per-run trace directory
+Inspect.kt        decodes a stored credential for the inspector
 ```
 
 ## Sources
