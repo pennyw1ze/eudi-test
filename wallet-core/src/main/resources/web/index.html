@@ -648,6 +648,21 @@ const loadSubjects = async () => {
   s.selectedIndex = Math.min(idx, list.length - 1);
 };
 
+// A human label for a credential configuration id. The reference issuer's ids are
+// long urns; the picker is friendlier with names, and it makes non-PID attestations
+// (the university degree) obvious as first-class choices alongside the PID.
+const credLabel = (id) => {
+  const map = {
+    'eu.europa.ec.eudi.pid_vc_sd_jwt': 'PID — SD-JWT VC',
+    'eu.europa.ec.eudi.pid_mso_mdoc': 'PID — ISO mdoc',
+    'org.iso.18013.5.1.mDL': 'Mobile Driving Licence — ISO mdoc',
+  };
+  if (map[id]) return map[id];
+  if (id.startsWith('urn:eu.europa.ec.eudi:learning:credential'))
+    return 'University degree (Learning Credential) — SD-JWT VC';
+  return id;
+};
+
 const loadCatalogue = async () => {
   const res = await api('/catalogue' + (sel.issuer ? '?issuerId=' + sel.issuer : ''));
   const s = $('cfg');
@@ -659,16 +674,20 @@ const loadCatalogue = async () => {
   }
   let preferred = null;
   for (const id of res.configurations) {
+    // The '_deferred' variants park issuance on the deferred endpoint, which the
+    // testbed does not poll; drop them rather than let them be picked and fail.
+    if (id.endsWith('_deferred')) continue;
     const o = document.createElement('option');
-    o.value = o.textContent = id;
-    // Prefer plain SD-JWT VC: it is what the presentation flow can present, and the
-    // '_deferred' variants park issuance on the deferred endpoint.
-    if ((id.includes('sd_jwt') || id.includes('sd-jwt')) && !id.endsWith('_deferred'))
-      preferred = preferred || id;
+    o.value = id;
+    o.textContent = credLabel(id);
+    // Prefer plain SD-JWT VC: it is what the presentation flow can present.
+    if (id.includes('sd_jwt') || id.includes('sd-jwt')) preferred = preferred || id;
     s.append(o);
   }
   if (preferred) s.value = preferred;
-  $('issueHint').textContent = 'Headless issuance logs in as the issuer’s configured user.';
+  $('issueHint').textContent =
+    'Pick a person and a credential — e.g. a PID, or the university degree — then issue. ' +
+    'Issue different attestations to different wallet units to set up a multi-holder presentation.';
 };
 
 const runIssuance = async (autoLogin) => {
