@@ -8,8 +8,15 @@ import eu.europa.ec.eudi.openid4vp.dcql.QueryId
 import eu.europa.ec.eudi.sdjwt.DefaultSdJwtOps
 import eu.europa.ec.eudi.sdjwt.NimbusSdJwtOps
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import java.util.Base64
 import java.util.Date
 import java.util.UUID
 import eu.europa.ec.eudi.openid4vp.dcql.ClaimPath as DcqlClaimPath
@@ -39,6 +46,8 @@ data class PresentationResult(
     /** Claims the verifier asked for, as the wallet understood them. */
     val requestedClaims: List<String> = emptyList(),
     val presentedCredentialId: String? = null,
+    /** Every credential presented, one per credential query the verifier asked for. */
+    val presentedCredentialIds: List<String> = emptyList(),
     val walletResponse: JsonElement? = null,
     val error: String? = null,
 )
@@ -75,7 +84,6 @@ class PresentationService(
         return try {
             sink.step(flowId, "Starting OpenID4VP presentation from '${unit.label}' to '${verifierRef.label}'")
 
-            val credential = pickCredential(request, unit)
             val query = request.dcqlQuery ?: VerifierDriver.defaultDcqlQuery()
             val nonce = UUID.randomUUID().toString()
 
@@ -125,35 +133,59 @@ class PresentationService(
                 walletUnitId = unit.id,
             )
 
-            val credentialQuery = resolved.query.credentials.value.firstOrNull()
-                ?: error("The verifier's DCQL query contains no credential queries")
+            // A combined presentation (ARF 6.6.3.10) carries several credential queries in
+            // one request. OpenID4VP answers each with its own entry in the vp_token,
+            // keyed by the query id, and each SD-JWT VC carries its own key binding JWT
+            // over the same nonce and audience. This loop satisfies every query from the
+            // presenting unit; the pooling attack later reuses buildSdJwtPresentation to
+            // let a *second* unit sign one of the entries with its own device key.
+            val credentialQueries = resolved.query.credentials.value
+            if (credentialQueries.isEmpty()) error("The verifier's DCQL query contains no credential queries")
 
-            if (credentialQuery.format.value.contains("mdoc")) {
-                error("This request asks for mso_mdoc; the testbed can only present SD-JWT VC so far")
+            val presented = credentialQueries.map { credentialQuery ->
+                if (credentialQuery.format.value.contains("mdoc")) {
+                    error(
+                        "Credential query '${credentialQuery.id.value}' asks for mso_mdoc; " +
+                            "the testbed can only present SD-JWT VC so far",
+                    )
+                }
+                val wantedVcts = credentialQuery.vctValues()
+                // Route each query to a held credential by vct, not by format: a combined
+                // request typically asks for several 'dc+sd-jwt' credentials, so matching on
+                // format alone would present the wrong one (openeudi/openid4vp#41).
+                val credential = matchCredential(credentialQuery, wantedVcts, unit, request, credentialQueries.size)
+                val requestedPaths = credentialQuery.claims.orEmpty().map { it.path }
+                sink.step(
+                    flowId,
+                    "Verifier '${resolved.client.id.clientId}' asks credential '${credentialQuery.id.value}'" +
+                        (wantedVcts.firstOrNull()?.let { " ($it)" } ?: "") + " for: " +
+                        (requestedPaths.joinToString(", ").ifBlank { "all claims" }),
+                    actor = "verifier",
+                )
+                val vpToken = buildSdJwtPresentation(
+                    unit = unit,
+                    raw = credential.raw,
+                    requestedPaths = requestedPaths,
+                    audience = resolved.client.id.clientId,
+                    nonce = resolved.nonce,
+                )
+                Triple(credentialQuery.id, credential, requestedPaths) to vpToken
             }
 
-            val requestedPaths = credentialQuery.claims.orEmpty().map { it.path }
             sink.step(
                 flowId,
-                "Verifier '${resolved.client.id.clientId}' asks for: " +
-                    (requestedPaths.joinToString(", ").ifBlank { "all claims" }),
-                actor = "verifier",
+                "Wallet posts a vp_token with ${presented.size} presentation(s) to the verifier",
             )
-
-            val vpToken = buildSdJwtPresentation(
-                unit = unit,
-                raw = credential.raw,
-                requestedPaths = requestedPaths,
-                audience = resolved.client.id.clientId,
-                nonce = resolved.nonce,
-            )
-
-            sink.step(flowId, "Wallet posts the vp_token to the verifier's response endpoint")
             val consensus = Consensus.PositiveConsensus(
                 VerifiablePresentations(
-                    mapOf(credentialQuery.id to listOf(VerifiablePresentation.Generic(vpToken))),
+                    presented.associate { (meta, vpToken) ->
+                        meta.first to listOf(VerifiablePresentation.Generic(vpToken))
+                    },
                 ),
             )
+
+            val requestedPaths = presented.flatMap { (meta, _) -> meta.third }
+            val presentedCredentials = presented.map { (meta, _) -> meta.second }
 
             val outcome = openId4Vp.dispatch(resolved, consensus, encryptionParameters = null)
             sink.step(flowId, "Verifier responded: $outcome", actor = "verifier")
@@ -190,7 +222,8 @@ class PresentationService(
                 transactionId = transaction.transactionId,
                 authorizationRequestUri = requestUri,
                 requestedClaims = requestedPaths.map { it.toString() },
-                presentedCredentialId = credential.id,
+                presentedCredentialId = presentedCredentials.firstOrNull()?.id,
+                presentedCredentialIds = presentedCredentials.map { it.id },
                 walletResponse = walletResponse,
             )
         } catch (failure: Exception) {
@@ -221,15 +254,50 @@ class PresentationService(
             ?.trim()
             ?.take(400)
 
-    private fun pickCredential(request: PresentationRequest, unit: WalletUnit): StoredCredential {
-        request.credentialId?.let { id ->
-            // Deliberately scoped to this unit: asking one unit to present another's
-            // credential is exactly the mistake the device key binding exists to catch.
-            return unit.store.get(id)
-                ?: error("Wallet unit '${unit.label}' holds no credential with id '$id'")
+    /** The vct values a credential query asks for, read from its raw DCQL meta. */
+    private fun CredentialQuery.vctValues(): List<String> =
+        (meta?.get("vct_values") as? JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            .orEmpty()
+
+    /** The vct of a stored SD-JWT VC, read from the issuer-signed JWT payload. */
+    private fun vctOf(raw: String): String? = runCatching {
+        val payload = raw.substringBefore('~').split('.')[1]
+        Json.parseToJsonElement(String(Base64.getUrlDecoder().decode(payload)))
+            .jsonObject["vct"]?.jsonPrimitive?.contentOrNull
+    }.getOrNull()
+
+    /**
+     * Pick the held credential that answers one credential query.
+     *
+     * Matching is by vct, because a combined request usually asks for several
+     * `dc+sd-jwt` credentials and matching on format alone would present the wrong one.
+     * An explicit credentialId is honoured only for a single-credential request, where
+     * it is unambiguous.
+     */
+    private fun matchCredential(
+        query: CredentialQuery,
+        wantedVcts: List<String>,
+        unit: WalletUnit,
+        request: PresentationRequest,
+        queryCount: Int,
+    ): StoredCredential {
+        if (queryCount == 1) {
+            request.credentialId?.let { id ->
+                // Deliberately scoped to this unit: asking one unit to present another's
+                // credential is exactly the mistake the device key binding exists to catch.
+                return unit.store.get(id)
+                    ?: error("Wallet unit '${unit.label}' holds no credential with id '$id'")
+            }
         }
-        return unit.store.all().lastOrNull { it.format.contains("sd-jwt") }
-            ?: error("Wallet unit '${unit.label}' holds no SD-JWT VC credential; issue one first")
+        val sdJwts = unit.store.all().filter { it.format.contains("sd-jwt") || it.raw.contains('~') }
+        val match =
+            if (wantedVcts.isEmpty()) sdJwts.lastOrNull()
+            else sdJwts.lastOrNull { vctOf(it.raw) in wantedVcts }
+        return match ?: error(
+            "Wallet unit '${unit.label}' holds no SD-JWT VC for query '${query.id.value}'" +
+                (wantedVcts.firstOrNull()?.let { " (vct $it)" } ?: "") + "; issue one first",
+        )
     }
 
     /**

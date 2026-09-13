@@ -325,6 +325,10 @@ dialog .hint{margin-top:0;margin-bottom:12px}
           <h3>Presentation request (DCQL)</h3>
           <div class="in">
             <div class="field">
+              <label for="dcqlPreset">Scenario</label>
+              <select id="dcqlPreset"></select>
+            </div>
+            <div class="field">
               <label for="dcql">Query</label>
               <textarea id="dcql" spellcheck="false"></textarea>
             </div>
@@ -755,7 +759,51 @@ const DEFAULT_DCQL = {
     claims: [{ path: ['family_name'] }, { path: ['given_name'] }]
   }]
 };
-const resetDcql = () => { $('dcql').value = JSON.stringify(DEFAULT_DCQL, null, 2); };
+
+// A combined presentation (ARF 6.6.3.10): an HR relying party that wants to judge how
+// quickly a candidate graduated, impartially, without seeing who they are. It asks for
+// two attestations at once — date of birth from the PID and date of graduation from the
+// university degree — and nothing else. credential_sets marks both as required together
+// and states the purpose, per OpenID4VP DCQL.
+const HR_COMBINED_DCQL = {
+  credentials: [
+    {
+      id: 'pid',
+      format: 'dc+sd-jwt',
+      meta: { vct_values: ['urn:eudi:pid:1'] },
+      claims: [{ path: ['birthdate'] }]
+    },
+    {
+      id: 'degree',
+      format: 'dc+sd-jwt',
+      meta: { vct_values: ['urn:eu.europa.ec.eudi:learning:credential:1'] },
+      claims: [{ path: ['date_of_issuance'] }]
+    }
+  ],
+  credential_sets: [
+    {
+      options: [['pid', 'degree']],
+      required: true,
+      purpose: 'Impartial graduation-speed check: date of birth (PID) and date of graduation (university degree) only'
+    }
+  ]
+};
+
+const DCQL_PRESETS = {
+  pid: { label: 'PID — name (single credential)', query: DEFAULT_DCQL },
+  hr: { label: 'HR combined check — birthdate (PID) + graduation date (degree)', query: HR_COMBINED_DCQL },
+};
+
+const setDcql = (obj) => { $('dcql').value = JSON.stringify(obj, null, 2); };
+const resetDcql = () => { $('dcqlPreset').value = 'pid'; setDcql(DEFAULT_DCQL); };
+
+// Populate the scenario picker; switching it loads that query into the editor.
+for (const [key, p] of Object.entries(DCQL_PRESETS)) {
+  const o = document.createElement('option');
+  o.value = key; o.textContent = p.label;
+  $('dcqlPreset').append(o);
+}
+$('dcqlPreset').onchange = () => setDcql(DCQL_PRESETS[$('dcqlPreset').value].query);
 resetDcql();
 $('resetDcql').onclick = resetDcql;
 
