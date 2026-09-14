@@ -92,6 +92,16 @@ showing a blob:
 
 This is where you confirm the issuer's signature and see exactly which claims it asserted.
 
+### Batch issuance
+
+Set **Copies** above 1 before issuing to request a batch: the wallet sends one credential
+request whose key attestation lists that many device keys, and the issuer returns one
+credential bound to each (the reference issuer allows up to 20). Every copy carries the same
+attributes but a distinct `cnf` key, so the batch shares no value a verifier could correlate
+across presentations — the wallet stores each copy with its own key and signs that copy's
+key-binding JWT with it. This is the unlinkable one-time-use model (and the ground the
+credential-pooling experiments build on).
+
 ## 3. Verify it
 
 **Verifier** tab. The console acts as the relying party here.
@@ -177,6 +187,29 @@ directory and links the crypto trace for download; `GET /api/session` reports th
   `config/status-list/`: the status list endpoint compared the `Accept` header with `==`,
   returning 406 to every real client, and its URIs pointed at `https://localhost`, which
   resolves to the container itself for the issuer and verifier.
+
+### Real hardware vs. this software wallet (WSCD)
+
+The wallet runs as a host process with software keys, so it emulates the Secure Element
+(WSCD) rather than using one. This is faithful enough because everything the WSCD adds is
+either **issuance-time trust anchoring** (key attestation, wallet unit attestation) or
+**device-local assurance** (non-extractable keys, user authentication, posture) — and the
+latter is never conveyed to or checked by the verifier at presentation, in SD-JWT VC or
+mdoc alike. Only the trust anchoring of the attestations is protocol-visible, and only at
+issuance.
+
+| WSCD element | Testbed status | Only real difference | Presentation-visible? |
+|---|---|---|---|
+| Device private key | emulated (software) | non-extractable SE key vs heap key | no |
+| Device public key | emulated | none (identical P-256 JWK) | no |
+| Key attestation | emulated + checked | manufacturer root vs self-signed; trust validator on vs off | no (issuance only) |
+| Wallet unit attestation | emulated + checked | trusted root vs self-signed (revocation is real) | no (issuance only) |
+| PoP (KB-JWT / mdoc `DeviceAuth`) | emulated | signed in SE vs in software — indistinguishable to the verifier | yes, but not the origin |
+| User authentication | asserted-only | real biometric/PIN gate vs none — never proven to the verifier | no |
+| Hardware posture | ignored | posture + compromise detection vs none | no |
+
+Full analysis, including why none of this blocks the credential-pooling attack, is in
+[`wscd-real-vs-emulated-sdjwt-vc.md`](wscd-real-vs-emulated-sdjwt-vc.md).
 
 ## Commands
 

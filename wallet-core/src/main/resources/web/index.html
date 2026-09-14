@@ -277,6 +277,10 @@ dialog .hint{margin-top:0;margin-bottom:12px}
               <label for="cfg">Credential configuration</label>
               <select id="cfg"><option>Loading…</option></select>
             </div>
+            <div class="field">
+              <label for="copies">Copies (batch issuance)</label>
+              <input id="copies" type="number" min="1" max="20" step="1" value="1">
+            </div>
             <div class="row">
               <button class="primary" id="issue">Issue to wallet</button>
               <button class="ghost" id="issueBrowser">Via browser login</button>
@@ -704,6 +708,7 @@ const runIssuance = async (autoLogin) => {
       walletUnitId: sel.unit,
       issuerId: sel.issuer,
       username: $('subject').value || undefined,
+      copies: Math.max(1, parseInt($('copies').value, 10) || 1),
       autoLogin,
     });
     if (res.status === 'awaiting-authorization' && res.authorizationUrl)

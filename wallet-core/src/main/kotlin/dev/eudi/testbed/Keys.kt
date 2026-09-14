@@ -149,6 +149,7 @@ class WalletKeys(
         nonce: String? = null,
         keyStorageStatus: KeyStorageStatusEntry,
         flowId: String? = null,
+        attestedKeys: List<ECKey> = listOf(deviceKey),
     ): KeyAttestationJWT {
         val now = Instant.now()
         val expiry = now.plusSeconds(300)
@@ -156,7 +157,11 @@ class WalletKeys(
         val claims = JWTClaimsSet.Builder()
             .issueTime(Date.from(now))
             .expirationTime(Date.from(expiry))
-            .claim("attested_keys", listOf(deviceKey.toPublicJWK().toJSONObject()))
+            // One entry per credential copy in a batch; the issuer mints one credential
+            // bound to each, and the JWT proof is signed by the first (index 0). Distinct
+            // keys per copy mean the batch carries no shared value a pooling check could
+            // correlate on (paper C4 unlinkability).
+            .claim("attested_keys", attestedKeys.map { it.toPublicJWK().toJSONObject() })
             // The reference issuer advertises key_attestations_required with
             // iso_18045_high for both; a lower level is refused.
             .claim("key_storage", listOf("iso_18045_high"))
@@ -200,7 +205,7 @@ class WalletKeys(
                 algorithm = "ES256",
                 keys = describe().filter { it.role == "device" || it.role == "wallet-provider" },
                 binds = buildMap {
-                    put("attested keys", "1")
+                    put("attested keys", attestedKeys.size.toString())
                     put("key_storage", "iso_18045_high")
                     put("user_authentication", "iso_18045_high")
                     put(
@@ -234,8 +239,9 @@ class WalletKeys(
         nonce: String? = null,
         keyStorageStatus: KeyStorageStatusEntry,
         flowId: String? = null,
+        attestedKeys: List<ECKey> = listOf(deviceKey),
     ): Signer<KeyAttestationJWT> {
-        val attestation = keyAttestation(nonce, keyStorageStatus, flowId)
+        val attestation = keyAttestation(nonce, keyStorageStatus, flowId, attestedKeys)
         // The library assembles and signs the proof JWT itself, so the serialized form
         // is not available here; the nonce and the signing key are, and they are what
         // the proof actually commits to.
@@ -252,13 +258,27 @@ class WalletKeys(
                 binds = buildMap {
                     if (nonce != null) put("issuer nonce (c_nonce)", nonce)
                     put("key attestation", "attached in the proof header")
+                    if (attestedKeys.size > 1) put("batch size", attestedKeys.size.toString())
                 },
                 onWire = "sealed inside the encrypted credential request",
                 walletUnitId = unitId,
             )
         }
-        return EcSigner(deviceKey, attestation)
+        // The issuer verifies the proof signature against attested_keys[0], so the batch's
+        // first key must be the one that signs.
+        return EcSigner(attestedKeys.first(), attestation)
     }
+
+    /**
+     * A fresh batch of device keys for unlinkable batch issuance.
+     *
+     * Each credential copy the issuer returns is bound to a distinct one of these; index 0
+     * also signs the credential-request proof. Generated per issuance and never kept as unit
+     * state — the private half of each is persisted alongside the credential it binds, so the
+     * copy can later be presented on its own.
+     */
+    fun newDeviceKeyBatch(size: Int): List<ECKey> =
+        List(size) { generateKey("device-copy") }
 
     companion object {
         /** A throwaway self-signed certificate over [key], for the x5c header. */

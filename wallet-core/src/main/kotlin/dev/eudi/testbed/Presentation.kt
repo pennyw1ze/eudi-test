@@ -2,6 +2,7 @@ package dev.eudi.testbed
 
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.crypto.ECDSASigner
+import com.nimbusds.jose.jwk.ECKey
 import eu.europa.ec.eudi.openid4vp.*
 import eu.europa.ec.eudi.openid4vp.dcql.CredentialQuery
 import eu.europa.ec.eudi.openid4vp.dcql.QueryId
@@ -162,8 +163,13 @@ class PresentationService(
                         (requestedPaths.joinToString(", ").ifBlank { "all claims" }),
                     actor = "verifier",
                 )
+                // Batch-issued copies each bind to a distinct key, so the key-binding JWT
+                // must be signed by the key this specific copy was bound to — not a single
+                // per-unit key. Fall back to the unit's device key for credentials issued
+                // before per-credential keys were tracked (single, non-batch issuance).
+                val boundKey = unit.store.deviceKeyFor(credential.id) ?: unit.keys.deviceKey
                 val vpToken = buildSdJwtPresentation(
-                    unit = unit,
+                    deviceKey = boundKey,
                     raw = credential.raw,
                     requestedPaths = requestedPaths,
                     audience = resolved.client.id.clientId,
@@ -306,7 +312,7 @@ class PresentationService(
      * this nonce, and the wallet's device key.
      */
     private suspend fun buildSdJwtPresentation(
-        unit: WalletUnit,
+        deviceKey: ECKey,
         raw: String,
         requestedPaths: List<DcqlClaimPath>,
         audience: String,
@@ -323,9 +329,9 @@ class PresentationService(
             ?: error("The stored credential cannot satisfy the requested claims")
 
         val buildKbJwt = NimbusSdJwtOps.kbJwtIssuer(
-            signer = ECDSASigner(unit.keys.deviceKey),
+            signer = ECDSASigner(deviceKey),
             signAlgorithm = JWSAlgorithm.ES256,
-            publicKey = unit.keys.deviceKey.toPublicJWK(),
+            publicKey = deviceKey.toPublicJWK(),
         ) {
             audience(audience)
             claim("nonce", nonce)

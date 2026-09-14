@@ -1,6 +1,7 @@
 package dev.eudi.testbed
 
 import com.nimbusds.jose.jwk.JWK
+import com.nimbusds.jwt.SignedJWT
 import eu.europa.ec.eudi.openid4vci.*
 import io.ktor.client.*
 import kotlinx.serialization.Serializable
@@ -22,6 +23,12 @@ data class IssuanceRequest(
     val autoLogin: Boolean = true,
     val username: String? = null,
     val password: String? = null,
+    /**
+     * How many copies of the credential to obtain in one issuance (batch issuance).
+     * Each copy is bound to a distinct device key, so the batch shares no value a verifier
+     * could correlate across presentations (paper C4 unlinkability). Defaults to 1.
+     */
+    val copies: Int = 1,
 )
 
 @Serializable
@@ -56,6 +63,7 @@ class IssuanceService(
         val prepared: AuthorizationRequestPrepared,
         val configurationId: CredentialConfigurationIdentifier,
         val client: HttpClient,
+        val copies: Int,
     )
 
     private val pending = ConcurrentHashMap<String, Pending>()
@@ -127,7 +135,7 @@ class IssuanceService(
             val authorizationUrl = prepared.authorizationCodeURL.value.toString()
 
             if (!request.autoLogin) {
-                pending[prepared.state] = Pending(flowId, unit, issuer, prepared, configurationId, client)
+                pending[prepared.state] = Pending(flowId, unit, issuer, prepared, configurationId, client, request.copies)
                 sink.step(flowId, "Waiting for the user to log in via the browser")
                 return IssuanceResult(
                     flowId = flowId,
@@ -163,6 +171,7 @@ class IssuanceService(
                 code = callback.code,
                 serverState = callback.state ?: prepared.state,
                 client = client,
+                copies = request.copies,
             )
 
             IssuanceResult(
@@ -204,6 +213,7 @@ class IssuanceService(
                 code = code,
                 serverState = state,
                 client = parked.client,
+                copies = parked.copies,
             )
             IssuanceResult(
                 flowId = parked.flowId,
@@ -273,18 +283,35 @@ class IssuanceService(
         code: String,
         serverState: String,
         client: HttpClient,
+        copies: Int,
     ): List<StoredCredential> = with(issuer) {
         sink.step(flowId, "Exchanging authorisation code for an access token", actor = "authorization-server")
         val authorized = with(prepared) {
             authorizeWithAuthorizationCode(AuthorizationCode(code), serverState).getOrThrow()
         }
 
-        sink.step(flowId, "Requesting credential with a JWT key-binding proof", actor = "issuer")
+        // One device key per requested copy. A single copy reuses the unit's device key
+        // (keeping single issuance unchanged); a batch generates distinct keys, the first of
+        // which also signs the proof. The issuer mints one credential per attested key.
+        val batchSize = copies.coerceAtLeast(1)
+        val deviceKeys =
+            if (batchSize == 1) listOf(unit.keys.deviceKey)
+            else unit.keys.newDeviceKeyBatch(batchSize)
+
+        if (batchSize > 1) {
+            sink.step(
+                flowId,
+                "Requesting $batchSize credential copies, each bound to a distinct device key (batch issuance)",
+                actor = "issuer",
+            )
+        } else {
+            sink.step(flowId, "Requesting credential with a JWT key-binding proof", actor = "issuer")
+        }
         // The attestation embeds a fresh status list entry, and the issuer dereferences it,
         // so it is taken here rather than reused across flows.
         val proof = ProofSpecification.JwtProof { nonce, _ ->
             val status = keyStorageStatus.take(client, flowId)
-            unit.keys.proofSigner(nonce?.value, status, flowId)
+            unit.keys.proofSigner(nonce?.value, status, flowId, deviceKeys)
         }
 
         val (_, outcome) = with(authorized) {
@@ -294,6 +321,10 @@ class IssuanceService(
         when (outcome) {
             is SubmissionOutcome.Success -> {
                 val format = formatOf(issuer, configurationId)
+                // Each returned credential is bound (cnf) to one of the attested keys. Match
+                // credential to key by thumbprint rather than list order, so the key stored
+                // with a copy is provably the one it was bound to even if order is not kept.
+                val keysByThumbprint = deviceKeys.associateBy { it.toPublicJWK().computeThumbprint().toString() }
                 outcome.credentials.map { issued ->
                     val raw = issued.credential.toString()
                     // The credential response is a JWE, so the scanner never saw this;
@@ -304,11 +335,13 @@ class IssuanceService(
                         raw = raw,
                         where = "decrypted from the issuer's credential response",
                     )
+                    val boundKey = cnfThumbprint(raw)?.let { keysByThumbprint[it] } ?: deviceKeys.first()
                     unit.store.add(
                         configurationId = configurationId.value,
                         format = format,
                         raw = raw,
                         issuer = issuer.credentialOffer.credentialIssuerIdentifier.value.toString(),
+                        deviceKey = boundKey,
                     )
                 }.also { sink.step(flowId, "Stored ${it.size} credential(s) in wallet unit '${unit.label}'") }
             }
@@ -321,6 +354,21 @@ class IssuanceService(
             is SubmissionOutcome.Failed -> error("Issuer rejected the request: ${outcome.error}")
         }
     }
+
+    /**
+     * The JWK thumbprint of the `cnf` key an issued SD-JWT VC is bound to.
+     *
+     * Read from the issuer-signed JWT (the segment before the first `~`), so a batch copy
+     * can be matched back to the device key it was bound to. Returns null for formats without
+     * a parseable `cnf.jwk` (e.g. mso_mdoc), in which case the caller falls back to order.
+     */
+    private fun cnfThumbprint(raw: String): String? = runCatching {
+        val issuerJwt = raw.substringBefore('~')
+        val cnf = SignedJWT.parse(issuerJwt).jwtClaimsSet.getJSONObjectClaim("cnf") ?: return null
+        @Suppress("UNCHECKED_CAST")
+        val jwk = cnf["jwk"] as? Map<String, Any> ?: return null
+        JWK.parse(jwk).computeThumbprint().toString()
+    }.getOrNull()
 
     /** The format the issuer advertises for this configuration, used by the inspector. */
     private fun formatOf(issuer: Issuer, configurationId: CredentialConfigurationIdentifier): String {
