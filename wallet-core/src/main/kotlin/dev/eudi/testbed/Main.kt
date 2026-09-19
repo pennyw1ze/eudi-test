@@ -324,6 +324,15 @@ fun Application.testbed() {
                 call.respond(presentationService.present(request))
             }
 
+            /**
+             * The pooling attack (Attack A): two or more colluding wallet units jointly
+             * satisfy one verifier request, each signing its own key binding JWT.
+             */
+            post("/present/pooled") {
+                val request = runCatching { call.receive<PooledPresentationRequest>() }.getOrElse { PooledPresentationRequest() }
+                call.respond(presentationService.presentPooled(request))
+            }
+
             // ------------------------------------------------------------ traces
 
             /** The cryptographic timeline: who proved what, over which key. */

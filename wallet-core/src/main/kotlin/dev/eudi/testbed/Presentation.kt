@@ -37,6 +37,43 @@ data class PresentationRequest(
     val dcqlQuery: JsonObject? = null,
 )
 
+/**
+ * A *pooled* presentation: two (or more) colluding wallet units jointly answer one
+ * verifier request, each contributing a credential held by a different unit and each
+ * signing its own key binding JWT with its own device key.
+ *
+ * This is Attack A (presentation-time relay pooling) from the paper. It is meaningful
+ * only against a verifier that binds credentials to a holder *presentationally* — by
+ * asking one wallet to return everything over one nonce — rather than proving the
+ * several credentials share a subject. The reference verifier does exactly that, so a
+ * response carrying two credentials under two different device keys passes every check.
+ */
+@Serializable
+data class PooledPresentationRequest(
+    /**
+     * The colluding wallet units, in the order they are searched to answer each
+     * credential query. The first unit is the "front": it drives the OpenID4VP
+     * exchange and posts the combined vp_token; the others hand it a key binding JWT
+     * over the shared nonce for the credential they hold.
+     */
+    val walletUnitIds: List<String> = emptyList(),
+    val verifierId: String? = null,
+    /** The DCQL query the verifier asks. For a pool this normally lists several credentials. */
+    val dcqlQuery: JsonObject? = null,
+)
+
+/** One wallet unit's contribution to a pooled presentation: which query it answered, and with which key. */
+@Serializable
+data class PooledContribution(
+    val queryId: String,
+    val walletUnitId: String,
+    val walletUnitLabel: String,
+    val credentialId: String,
+    val vct: String? = null,
+    /** RFC 7638 thumbprint of the device key that signed this credential's key binding JWT. */
+    val deviceKeyThumbprint: String,
+)
+
 @Serializable
 data class PresentationResult(
     val flowId: String,
@@ -51,6 +88,10 @@ data class PresentationResult(
     val presentedCredentialIds: List<String> = emptyList(),
     val walletResponse: JsonElement? = null,
     val error: String? = null,
+    /** True when more than one wallet unit contributed a credential (the pooling attack). */
+    val pooled: Boolean = false,
+    /** Who signed what, when the presentation was pooled across units. */
+    val contributions: List<PooledContribution> = emptyList(),
 )
 
 /**
@@ -76,16 +117,78 @@ class PresentationService(
         supportedClientIdPrefixes = listOf(SupportedClientIdPrefix.X509SanDns { _ -> true }),
     )
 
+    /** One wallet unit's answer to one credential query: the credential and the key that will sign its binding. */
+    private data class Contribution(
+        val unit: WalletUnit,
+        val credential: StoredCredential,
+        val boundKey: ECKey,
+    )
+
+    /**
+     * Ordinary single-holder presentation: one wallet unit answers every credential
+     * query in the request with credentials it holds, all under its own device key(s).
+     */
     suspend fun present(request: PresentationRequest): PresentationResult {
         val flowId = "vp-${UUID.randomUUID().toString().take(8)}"
         val unit = registry.walletUnit(request.walletUnitId)
         val verifierRef = registry.verifier(request.verifierId)
-        val client = tracedHttpClient(flowId, sink, scanner = scanner, walletUnitId = unit.id)
+        val query = request.dcqlQuery ?: VerifierDriver.defaultDcqlQuery()
+
+        sink.step(flowId, "Starting OpenID4VP presentation from '${unit.label}' to '${verifierRef.label}'")
+
+        return runExchange(flowId, leadUnit = unit, verifierRef = verifierRef, query = query, pooled = false) { credentialQuery, queryCount ->
+            val wantedVcts = credentialQuery.vctValues()
+            matchCredential(credentialQuery, wantedVcts, unit, request, queryCount)
+        }
+    }
+
+    /**
+     * Pooled presentation (Attack A): several colluding wallet units jointly answer one
+     * request. Each credential query is routed to whichever unit holds a matching
+     * credential, and that unit's own device key signs its key binding JWT. The front
+     * unit posts the combined vp_token; from the verifier's side it is one response.
+     */
+    suspend fun presentPooled(request: PooledPresentationRequest): PresentationResult {
+        val flowId = "vp-${UUID.randomUUID().toString().take(8)}"
+        val units = request.walletUnitIds
+            .ifEmpty { registry.walletUnits().map { it.id } }
+            .map { registry.walletUnit(it) }
+            .distinctBy { it.id }
+        if (units.size < 2) {
+            error("A pooled presentation needs at least two distinct wallet units; got ${units.size}")
+        }
+        val leadUnit = units.first()
+        val verifierRef = registry.verifier(request.verifierId)
+        val query = request.dcqlQuery ?: VerifierDriver.defaultDcqlQuery()
+
+        sink.step(
+            flowId,
+            "Starting POOLED OpenID4VP presentation to '${verifierRef.label}' across ${units.size} colluding units: " +
+                units.joinToString(", ") { "'${it.label}'" },
+        )
+
+        return runExchange(flowId, leadUnit = leadUnit, verifierRef = verifierRef, query = query, pooled = true) { credentialQuery, _ ->
+            val wantedVcts = credentialQuery.vctValues()
+            matchAcrossUnits(credentialQuery, wantedVcts, units)
+        }
+    }
+
+    /**
+     * The shared OpenID4VP exchange. [resolve] decides, per credential query, which unit
+     * and credential answer it and with which key its binding is signed — the only thing
+     * that differs between a single-holder and a pooled presentation.
+     */
+    private suspend fun runExchange(
+        flowId: String,
+        leadUnit: WalletUnit,
+        verifierRef: VerifierRef,
+        query: JsonObject,
+        pooled: Boolean,
+        resolve: (CredentialQuery, Int) -> Contribution,
+    ): PresentationResult {
+        val client = tracedHttpClient(flowId, sink, scanner = scanner, walletUnitId = leadUnit.id)
 
         return try {
-            sink.step(flowId, "Starting OpenID4VP presentation from '${unit.label}' to '${verifierRef.label}'")
-
-            val query = request.dcqlQuery ?: VerifierDriver.defaultDcqlQuery()
             val nonce = UUID.randomUUID().toString()
 
             val transaction = verifier.initTransaction(client, flowId, query, nonce, verifierRef)
@@ -107,7 +210,7 @@ class PresentationService(
                         artifact = "Authorisation request object (JAR)",
                         summary = "Wallet rejected the verifier's signed request",
                         binds = mapOf("reason" to resolution.error.toString()),
-                        walletUnitId = unit.id,
+                        walletUnitId = leadUnit.id,
                     )
                     error("Wallet rejected the request: ${resolution.error}")
                 }
@@ -131,15 +234,14 @@ class PresentationService(
                 caveat = "The certificate chain is accepted wholesale: the testbed's X509SanDns " +
                     "trust check returns true for every chain. A real wallet would resolve the " +
                     "verifier against a trusted list of registered relying parties.",
-                walletUnitId = unit.id,
+                walletUnitId = leadUnit.id,
             )
 
             // A combined presentation (ARF 6.6.3.10) carries several credential queries in
             // one request. OpenID4VP answers each with its own entry in the vp_token,
             // keyed by the query id, and each SD-JWT VC carries its own key binding JWT
-            // over the same nonce and audience. This loop satisfies every query from the
-            // presenting unit; the pooling attack later reuses buildSdJwtPresentation to
-            // let a *second* unit sign one of the entries with its own device key.
+            // over the same nonce and audience. In a pooled presentation the entries are
+            // signed by *different* units' device keys — that is the attack.
             val credentialQueries = resolved.query.credentials.value
             if (credentialQueries.isEmpty()) error("The verifier's DCQL query contains no credential queries")
 
@@ -151,10 +253,7 @@ class PresentationService(
                     )
                 }
                 val wantedVcts = credentialQuery.vctValues()
-                // Route each query to a held credential by vct, not by format: a combined
-                // request typically asks for several 'dc+sd-jwt' credentials, so matching on
-                // format alone would present the wrong one (openeudi/openid4vp#41).
-                val credential = matchCredential(credentialQuery, wantedVcts, unit, request, credentialQueries.size)
+                val contribution = resolve(credentialQuery, credentialQueries.size)
                 val requestedPaths = credentialQuery.claims.orEmpty().map { it.path }
                 sink.step(
                     flowId,
@@ -163,35 +262,66 @@ class PresentationService(
                         (requestedPaths.joinToString(", ").ifBlank { "all claims" }),
                     actor = "verifier",
                 )
+                if (pooled) {
+                    sink.step(
+                        flowId,
+                        "Pooled: unit '${contribution.unit.label}' answers query '${credentialQuery.id.value}' " +
+                            "with its own credential and signs the key binding with its own device key",
+                    )
+                    // The crux of Attack A made explicit in the crypto trace: this entry's
+                    // key binding is signed by a device key that belongs to a *different*
+                    // unit than the one signing the other entry, yet the verifier treats
+                    // the response as coming from one holder.
+                    crypto.record(
+                        flowId = flowId,
+                        operation = "sign",
+                        actor = "wallet",
+                        artifact = "Key binding JWT for query '${credentialQuery.id.value}'",
+                        summary = "Wallet unit '${contribution.unit.label}' signed the key binding for its " +
+                            "own credential, over the verifier's shared nonce and audience",
+                        algorithm = "ES256",
+                        keys = listOf(contribution.boundKey.asDeviceKeyRef()),
+                        binds = mapOf(
+                            "credential" to contribution.credential.id,
+                            "nonce" to resolved.nonce,
+                            "audience" to resolved.client.id.clientId,
+                        ),
+                        caveat = "This key binding is signed by a device key held by a different wallet unit " +
+                            "than the one signing the other credential in the same vp_token. The verifier " +
+                            "binds credentials to a holder presentationally (one nonce, one response), so it " +
+                            "cannot tell that two devices — two people — jointly produced this response.",
+                        walletUnitId = contribution.unit.id,
+                    )
+                }
                 // Batch-issued copies each bind to a distinct key, so the key-binding JWT
-                // must be signed by the key this specific copy was bound to — not a single
-                // per-unit key. Fall back to the unit's device key for credentials issued
-                // before per-credential keys were tracked (single, non-batch issuance).
-                val boundKey = unit.store.deviceKeyFor(credential.id) ?: unit.keys.deviceKey
+                // must be signed by the key this specific copy was bound to. Fall back to
+                // the unit's device key for credentials issued before per-credential keys
+                // were tracked (single, non-batch issuance).
                 val vpToken = buildSdJwtPresentation(
-                    deviceKey = boundKey,
-                    raw = credential.raw,
+                    deviceKey = contribution.boundKey,
+                    raw = contribution.credential.raw,
                     requestedPaths = requestedPaths,
                     audience = resolved.client.id.clientId,
                     nonce = resolved.nonce,
                 )
-                Triple(credentialQuery.id, credential, requestedPaths) to vpToken
+                Presented(credentialQuery.id, contribution, requestedPaths, vpToken) to credentialQuery
             }
 
             sink.step(
                 flowId,
-                "Wallet posts a vp_token with ${presented.size} presentation(s) to the verifier",
+                "Wallet posts a vp_token with ${presented.size} presentation(s) to the verifier" +
+                    if (pooled) " (pooled across ${presented.map { it.first.contribution.unit.id }.distinct().size} units)" else "",
             )
             val consensus = Consensus.PositiveConsensus(
                 VerifiablePresentations(
-                    presented.associate { (meta, vpToken) ->
-                        meta.first to listOf(VerifiablePresentation.Generic(vpToken))
+                    presented.associate { (p, _) ->
+                        p.queryId to listOf(VerifiablePresentation.Generic(p.vpToken))
                     },
                 ),
             )
 
-            val requestedPaths = presented.flatMap { (meta, _) -> meta.third }
-            val presentedCredentials = presented.map { (meta, _) -> meta.second }
+            val requestedPaths = presented.flatMap { (p, _) -> p.requestedPaths }
+            val presentedCredentials = presented.map { (p, _) -> p.contribution.credential }
 
             val outcome = openId4Vp.dispatch(resolved, consensus, encryptionParameters = null)
             sink.step(flowId, "Verifier responded: $outcome", actor = "verifier")
@@ -200,6 +330,18 @@ class PresentationService(
             // because the exchange completed would hide exactly what we came to test.
             val accepted = outcome !is DispatchOutcome.VerifierResponse.Rejected
             val rejection = if (accepted) null else rejectionReason(flowId)
+
+            val contributions = presented.map { (p, credentialQuery) ->
+                PooledContribution(
+                    queryId = p.queryId.value,
+                    walletUnitId = p.contribution.unit.id,
+                    walletUnitLabel = p.contribution.unit.label,
+                    credentialId = p.contribution.credential.id,
+                    vct = credentialQuery.vctValues().firstOrNull() ?: vctOf(p.contribution.credential.raw),
+                    deviceKeyThumbprint = p.contribution.boundKey.computeThumbprint().toString(),
+                )
+            }
+            val distinctUnits = contributions.map { it.walletUnitId }.distinct().size
 
             // The verdict is the last cryptographic act of the exchange: the verifier
             // checked the issuer's signature, the disclosure digests and the key binding.
@@ -210,12 +352,18 @@ class PresentationService(
                 artifact = "Verifiable presentation",
                 summary = if (accepted) {
                     "Verifier accepted the presentation: the issuer's signature, the digests of the " +
-                        "disclosed claims and the key binding to this nonce all checked out"
+                        "disclosed claims and the key binding to this nonce all checked out" +
+                        if (pooled && distinctUnits > 1) {
+                            " — even though the $distinctUnits credentials were signed by $distinctUnits " +
+                                "different device keys from $distinctUnits different wallet units (Attack A)"
+                        } else {
+                            ""
+                        }
                 } else {
                     "Verifier rejected the presentation"
                 },
                 binds = buildMap { rejection?.let { put("reason", it) } },
-                walletUnitId = unit.id,
+                walletUnitId = leadUnit.id,
             )
 
             val walletResponse = verifier.walletResponse(client, flowId, transaction.transactionId, verifierRef)
@@ -223,7 +371,7 @@ class PresentationService(
             PresentationResult(
                 flowId = flowId,
                 status = if (accepted) "presented" else "rejected",
-                walletUnitId = unit.id,
+                walletUnitId = leadUnit.id,
                 error = if (accepted) null else "The verifier rejected the vp_token: ${rejection ?: "no reason given"}",
                 transactionId = transaction.transactionId,
                 authorizationRequestUri = requestUri,
@@ -231,19 +379,30 @@ class PresentationService(
                 presentedCredentialId = presentedCredentials.firstOrNull()?.id,
                 presentedCredentialIds = presentedCredentials.map { it.id },
                 walletResponse = walletResponse,
+                pooled = pooled && distinctUnits > 1,
+                contributions = if (pooled) contributions else emptyList(),
             )
         } catch (failure: Exception) {
             sink.error(flowId, failure.message ?: failure.toString())
             PresentationResult(
                 flowId = flowId,
                 status = "failed",
-                walletUnitId = unit.id,
+                walletUnitId = leadUnit.id,
                 error = failure.message ?: failure.toString(),
+                pooled = pooled,
             )
         } finally {
             client.close()
         }
     }
+
+    /** One credential query's resolved answer, carried alongside the vp_token it produced. */
+    private data class Presented(
+        val queryId: QueryId,
+        val contribution: Contribution,
+        val requestedPaths: List<DcqlClaimPath>,
+        val vpToken: String,
+    )
 
     /**
      * The verifier's own words for a rejection.
@@ -273,6 +432,16 @@ class PresentationService(
             .jsonObject["vct"]?.jsonPrimitive?.contentOrNull
     }.getOrNull()
 
+    /** A public [KeyRef] for a device key, so the console can colour it in the crypto trace. */
+    private fun ECKey.asDeviceKeyRef(): KeyRef = KeyRef(
+        role = "device",
+        thumbprint = computeThumbprint().toString(),
+        kty = keyType.value,
+        crv = curve.name,
+        kid = keyID,
+        storage = "software (JVM heap)",
+    )
+
     /**
      * Pick the held credential that answers one credential query.
      *
@@ -287,21 +456,54 @@ class PresentationService(
         unit: WalletUnit,
         request: PresentationRequest,
         queryCount: Int,
-    ): StoredCredential {
+    ): Contribution {
         if (queryCount == 1) {
             request.credentialId?.let { id ->
                 // Deliberately scoped to this unit: asking one unit to present another's
                 // credential is exactly the mistake the device key binding exists to catch.
-                return unit.store.get(id)
+                val credential = unit.store.get(id)
                     ?: error("Wallet unit '${unit.label}' holds no credential with id '$id'")
+                val boundKey = unit.store.deviceKeyFor(credential.id) ?: unit.keys.deviceKey
+                return Contribution(unit, credential, boundKey)
             }
         }
         val sdJwts = unit.store.all().filter { it.format.contains("sd-jwt") || it.raw.contains('~') }
         val match =
             if (wantedVcts.isEmpty()) sdJwts.lastOrNull()
             else sdJwts.lastOrNull { vctOf(it.raw) in wantedVcts }
-        return match ?: error(
+        val credential = match ?: error(
             "Wallet unit '${unit.label}' holds no SD-JWT VC for query '${query.id.value}'" +
+                (wantedVcts.firstOrNull()?.let { " (vct $it)" } ?: "") + "; issue one first",
+        )
+        val boundKey = unit.store.deviceKeyFor(credential.id) ?: unit.keys.deviceKey
+        return Contribution(unit, credential, boundKey)
+    }
+
+    /**
+     * Route one credential query to whichever pooled unit holds a matching credential.
+     *
+     * Units are searched in order and the first match wins, so distinct-vct queries in a
+     * combined request naturally fall to the units that hold each vct — which is what
+     * makes the presentation genuinely pooled. A unit's copy is bound to its own device
+     * key, and that key signs the key binding, so no key is shared across the pool.
+     */
+    private fun matchAcrossUnits(
+        query: CredentialQuery,
+        wantedVcts: List<String>,
+        units: List<WalletUnit>,
+    ): Contribution {
+        for (unit in units) {
+            val sdJwts = unit.store.all().filter { it.format.contains("sd-jwt") || it.raw.contains('~') }
+            val match =
+                if (wantedVcts.isEmpty()) sdJwts.lastOrNull()
+                else sdJwts.lastOrNull { vctOf(it.raw) in wantedVcts }
+            if (match != null) {
+                val boundKey = unit.store.deviceKeyFor(match.id) ?: unit.keys.deviceKey
+                return Contribution(unit, match, boundKey)
+            }
+        }
+        error(
+            "None of the pooled wallet units holds an SD-JWT VC for query '${query.id.value}'" +
                 (wantedVcts.firstOrNull()?.let { " (vct $it)" } ?: "") + "; issue one first",
         )
     }
