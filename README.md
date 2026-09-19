@@ -211,6 +211,11 @@ issuance.
 Full analysis, including why none of this blocks the credential-pooling attack, is in
 [`wscd-real-vs-emulated-sdjwt-vc.md`](wscd-real-vs-emulated-sdjwt-vc.md).
 
+An annotated, end-to-end run of the pooling attack itself (Attack A from the paper) —
+roles, protocol steps, and the merged crypto/network transcript — is in
+[`docs/attack-a-pooling-transcript.md`](docs/attack-a-pooling-transcript.md), regenerated
+by `scripts/attack-a-transcript.py` against the running testbed.
+
 ## Commands
 
 ```
