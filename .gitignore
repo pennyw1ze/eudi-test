@@ -28,3 +28,7 @@ keycloak.log
 
 # IDE/compiled output
 wallet-core/bin/
+
+# unpublished paper — never commit
+docs/no_pooling_no_party.tex
+*.tex
