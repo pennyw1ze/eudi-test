@@ -19,7 +19,7 @@ private val crypto = CryptoSink(session)
 private val scanner = CryptoScanner(crypto)
 private val registry = Registry(crypto)
 private val verifierDriver = VerifierDriver(sink)
-private val issuanceService = IssuanceService(sink, scanner, registry)
+private val issuanceService = IssuanceService(sink, crypto, scanner, registry)
 private val presentationService = PresentationService(sink, crypto, scanner, registry, verifierDriver)
 private val statusService = StatusService(registry)
 

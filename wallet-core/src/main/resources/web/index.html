@@ -277,6 +277,10 @@ dialog .hint{margin-top:0;margin-bottom:12px}
               <label for="cfg">Credential configuration</label>
               <select id="cfg"><option>Loading…</option></select>
             </div>
+            <div class="field">
+              <label for="bindUnit">Bind credential to (Attack B — issuance transfer)</label>
+              <select id="bindUnit"></select>
+            </div>
             <div class="row">
               <button class="primary" id="issue">Issue to wallet</button>
               <button class="ghost" id="issueBrowser">Via browser login</button>
@@ -502,6 +506,13 @@ const refreshUnits = async () => {
   $('unitKeys').innerHTML = current && current.keys.length
     ? `<div class="row" style="gap:6px">${current.keys.map(keyChip).join('')}</div>`
     : '<span class="empty">No keys.</span>';
+  const bind = $('bindUnit');
+  if (bind) {
+    const prev = bind.value;
+    bind.innerHTML = '<option value="">— this unit (normal issuance) —</option>' +
+      units.map(u => `<option value="${esc(u.id)}">${esc(u.label)}</option>`).join('');
+    bind.value = units.some(u => u.id === prev) ? prev : '';
+  }
 };
 
 const refreshIssuers = async () => {
@@ -695,11 +706,13 @@ const runIssuance = async (autoLogin) => {
   btn.disabled = true;
   $('issueHint').textContent = 'Running…';
   try {
+    const bindTo = $('bindUnit').value;   // '' = bind to this (authorising) unit
     const res = await post('/issue', {
       credentialConfigurationId: $('cfg').value,
       walletUnitId: sel.unit,
       issuerId: sel.issuer,
       username: $('subject').value || undefined,
+      bindToWalletUnitId: (bindTo && bindTo !== sel.unit) ? bindTo : undefined,
       autoLogin,
     });
     if (res.status === 'awaiting-authorization' && res.authorizationUrl)

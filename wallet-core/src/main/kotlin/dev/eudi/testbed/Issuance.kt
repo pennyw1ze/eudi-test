@@ -22,6 +22,16 @@ data class IssuanceRequest(
     val autoLogin: Boolean = true,
     val username: String? = null,
     val password: String? = null,
+    /**
+     * Attack B (issuance-time credential transfer). Bind the issued credential to the
+     * device key of *this* wallet unit instead of the authorising one. The holder named
+     * by [walletUnitId]/[username] runs the whole authorisation leg and authenticates as
+     * themselves, but the key-binding proof is signed by the unit named here, so the
+     * issuer binds the credential to — and it becomes presentable by — a *different*
+     * device than the one that authenticated. Default (null) binds to the authorising
+     * unit: ordinary issuance.
+     */
+    val bindToWalletUnitId: String? = null,
 )
 
 @Serializable
@@ -42,6 +52,7 @@ data class IssuanceResult(
  */
 class IssuanceService(
     private val sink: TraceSink,
+    private val crypto: CryptoSink,
     private val scanner: CryptoScanner,
     private val registry: Registry,
 ) {
@@ -52,6 +63,7 @@ class IssuanceService(
     private data class Pending(
         val flowId: String,
         val unit: WalletUnit,
+        val bindUnit: WalletUnit,
         val issuer: Issuer,
         val prepared: AuthorizationRequestPrepared,
         val configurationId: CredentialConfigurationIdentifier,
@@ -107,11 +119,23 @@ class IssuanceService(
     suspend fun issue(request: IssuanceRequest): IssuanceResult {
         val flowId = "iss-${UUID.randomUUID().toString().take(8)}"
         val unit = registry.walletUnit(request.walletUnitId)
+        // Attack B: the credential may be bound to a *different* unit's device key than
+        // the one running the authorisation leg. Default is the authorising unit itself.
+        val bindUnit = request.bindToWalletUnitId?.let { registry.walletUnit(it) } ?: unit
+        val transfer = bindUnit.id != unit.id
         val issuerRef = registry.issuer(request.issuerId)
         val client = tracedHttpClient(flowId, sink, withCookies = true, scanner = scanner, walletUnitId = unit.id)
 
         return try {
             sink.step(flowId, "Starting OpenID4VCI issuance as '${unit.label}' against '${issuerRef.label}'")
+            if (transfer) {
+                sink.step(
+                    flowId,
+                    "Attack B: '${unit.label}' runs the authorisation leg, but the key-binding proof " +
+                        "will be signed by '${bindUnit.label}' — the credential will bind to a device that " +
+                        "did not authenticate",
+                )
+            }
 
             val (issuer, warnings) =
                 negotiate(flowId, request, client, configFor(client, flowId, unit, issuerRef), issuerRef)
@@ -127,7 +151,7 @@ class IssuanceService(
             val authorizationUrl = prepared.authorizationCodeURL.value.toString()
 
             if (!request.autoLogin) {
-                pending[prepared.state] = Pending(flowId, unit, issuer, prepared, configurationId, client)
+                pending[prepared.state] = Pending(flowId, unit, bindUnit, issuer, prepared, configurationId, client)
                 sink.step(flowId, "Waiting for the user to log in via the browser")
                 return IssuanceResult(
                     flowId = flowId,
@@ -157,6 +181,7 @@ class IssuanceService(
             val credentials = redeem(
                 flowId = flowId,
                 unit = unit,
+                bindUnit = bindUnit,
                 issuer = issuer,
                 prepared = prepared,
                 configurationId = configurationId,
@@ -165,10 +190,12 @@ class IssuanceService(
                 client = client,
             )
 
+            if (transfer) recordTransfer(flowId, unit, bindUnit, loginUser)
+
             IssuanceResult(
                 flowId = flowId,
                 status = "issued",
-                walletUnitId = unit.id,
+                walletUnitId = bindUnit.id,
                 credentials = credentials,
                 warnings = warnings.map { it.toString() },
             )
@@ -198,6 +225,7 @@ class IssuanceService(
             val credentials = redeem(
                 flowId = parked.flowId,
                 unit = parked.unit,
+                bindUnit = parked.bindUnit,
                 issuer = parked.issuer,
                 prepared = parked.prepared,
                 configurationId = parked.configurationId,
@@ -205,10 +233,13 @@ class IssuanceService(
                 serverState = state,
                 client = parked.client,
             )
+            if (parked.bindUnit.id != parked.unit.id) {
+                recordTransfer(parked.flowId, parked.unit, parked.bindUnit, "browser session")
+            }
             IssuanceResult(
                 flowId = parked.flowId,
                 status = "issued",
-                walletUnitId = parked.unit.id,
+                walletUnitId = parked.bindUnit.id,
                 credentials = credentials,
             )
         } catch (failure: Exception) {
@@ -267,6 +298,7 @@ class IssuanceService(
     private suspend fun redeem(
         flowId: String,
         unit: WalletUnit,
+        bindUnit: WalletUnit,
         issuer: Issuer,
         prepared: AuthorizationRequestPrepared,
         configurationId: CredentialConfigurationIdentifier,
@@ -282,9 +314,14 @@ class IssuanceService(
         sink.step(flowId, "Requesting credential with a JWT key-binding proof", actor = "issuer")
         // The attestation embeds a fresh status list entry, and the issuer dereferences it,
         // so it is taken here rather than reused across flows.
+        //
+        // Attack B lives in this one line: the proof (and the key attestation inside it) is
+        // signed by bindUnit's device key, which for a transfer is NOT the unit that
+        // authenticated. The issuer binds the credential to whatever key the proof attests,
+        // and never checks it is co-resident with the authenticating wallet or identity.
         val proof = ProofSpecification.JwtProof { nonce, _ ->
             val status = keyStorageStatus.take(client, flowId)
-            unit.keys.proofSigner(nonce?.value, status, flowId)
+            bindUnit.keys.proofSigner(nonce?.value, status, flowId)
         }
 
         val (_, outcome) = with(authorized) {
@@ -300,17 +337,17 @@ class IssuanceService(
                     // hand it the decrypted credential so the trace is complete.
                     scanner.recordIssuedCredential(
                         flowId = flowId,
-                        walletUnitId = unit.id,
+                        walletUnitId = bindUnit.id,
                         raw = raw,
                         where = "decrypted from the issuer's credential response",
                     )
-                    unit.store.add(
+                    bindUnit.store.add(
                         configurationId = configurationId.value,
                         format = format,
                         raw = raw,
                         issuer = issuer.credentialOffer.credentialIssuerIdentifier.value.toString(),
                     )
-                }.also { sink.step(flowId, "Stored ${it.size} credential(s) in wallet unit '${unit.label}'") }
+                }.also { sink.step(flowId, "Stored ${it.size} credential(s) in wallet unit '${bindUnit.label}'") }
             }
 
             is SubmissionOutcome.Deferred -> {
@@ -320,6 +357,49 @@ class IssuanceService(
 
             is SubmissionOutcome.Failed -> error("Issuer rejected the request: ${outcome.error}")
         }
+    }
+
+    /**
+     * Record the issuance-time transfer (Attack B) in the cryptographic trace.
+     *
+     * The credential was authenticated by [authUnit] (as [authAs]) but bound to a device
+     * key held by [bindUnit]. The issuer performed no co-residency check between the two,
+     * so the credential now lives in, and is presentable by, a device that never
+     * authenticated — transfer, not delegation.
+     */
+    private fun recordTransfer(flowId: String, authUnit: WalletUnit, bindUnit: WalletUnit, authAs: String) {
+        val authKey = KeyRef(
+            role = "device (authorising)",
+            thumbprint = authUnit.keys.deviceKey.computeThumbprint().toString(),
+            storage = "software (JVM heap)",
+        )
+        val boundKey = KeyRef(
+            role = "device (bound)",
+            thumbprint = bindUnit.keys.deviceKey.computeThumbprint().toString(),
+            storage = "software (JVM heap)",
+        )
+        crypto.record(
+            flowId = flowId,
+            operation = "bind",
+            actor = "issuer",
+            artifact = "Issued attestation (cnf key binding)",
+            summary = "Issuer bound '${authUnit.label}'-authenticated attributes to a device key held by a " +
+                "different wallet unit ('${bindUnit.label}'), never checking that the bound key is co-resident " +
+                "with the authenticating holder",
+            algorithm = "ES256",
+            keys = listOf(authKey, boundKey),
+            binds = mapOf(
+                "authenticated as" to authAs,
+                "authorising unit" to authUnit.label,
+                "credential bound to" to bindUnit.label,
+                "bound key thumbprint" to boundKey.thumbprint,
+            ),
+            caveat = "ARF ISSU_05 mandates a delivery/activation co-residency check for the PID (LoA High) but " +
+                "explicitly exempts QEAAs and EAAs as non-identity means; the reference issuer performs none for " +
+                "this attribute attestation. The credential is now presentable by '${bindUnit.label}' alone, " +
+                "indefinitely and without the authenticating holder — transfer, not delegation. This is Attack B.",
+            walletUnitId = bindUnit.id,
+        )
     }
 
     /** The format the issuer advertises for this configuration, used by the inspector. */
