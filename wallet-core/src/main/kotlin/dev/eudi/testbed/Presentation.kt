@@ -62,6 +62,25 @@ data class PooledPresentationRequest(
     val dcqlQuery: JsonObject? = null,
 )
 
+/**
+ * A *linkable* presentation: the countermeasure from the paper (§"The linking issuer
+ * role"). The listed units answer the request exactly as [PooledPresentationRequest]
+ * does, but each contributing unit also produces a WUA co-residency attestation for the
+ * key it signs with, the linking issuer is asked to bind those keys, and the verifier
+ * runs the extra link check.
+ *
+ * With one unit this is a genuine single-holder presentation and is accepted. With two
+ * or more units it is Attack A, and the link check now rejects it — the keys are not
+ * co-resident, so no link credential can be issued over them.
+ */
+@Serializable
+data class LinkedPresentationRequest(
+    /** The units answering the request. One = genuine holder; several = the pooling attempt. */
+    val walletUnitIds: List<String> = emptyList(),
+    val verifierId: String? = null,
+    val dcqlQuery: JsonObject? = null,
+)
+
 /** One wallet unit's contribution to a pooled presentation: which query it answered, and with which key. */
 @Serializable
 data class PooledContribution(
@@ -92,6 +111,8 @@ data class PresentationResult(
     val pooled: Boolean = false,
     /** Who signed what, when the presentation was pooled across units. */
     val contributions: List<PooledContribution> = emptyList(),
+    /** The linking-issuer countermeasure verdict, when a linkable presentation was run. */
+    val link: LinkVerdict? = null,
 )
 
 /**
@@ -108,6 +129,8 @@ class PresentationService(
     private val scanner: CryptoScanner,
     private val registry: Registry,
     private val verifier: VerifierDriver,
+    private val linkingIssuer: LinkingIssuer,
+    private val linkingVerifier: LinkingVerifier,
 ) {
 
     private val config = OpenId4VPConfig(
@@ -174,6 +197,48 @@ class PresentationService(
     }
 
     /**
+     * Linkable presentation — the countermeasure. Runs the same exchange as a pooled
+     * presentation, but each contributing unit also proves co-residency of the key it
+     * signs with, the linking issuer is asked to bind those keys, and the verifier runs
+     * the extra link check (paper §"The linking issuer role").
+     *
+     * One unit is a genuine holder and is accepted; two or more units are Attack A and
+     * are now rejected, because their keys live in different WSCDs and no link credential
+     * can be issued over them.
+     */
+    suspend fun presentLinked(request: LinkedPresentationRequest): PresentationResult {
+        val flowId = "vp-${UUID.randomUUID().toString().take(8)}"
+        val units = request.walletUnitIds
+            .ifEmpty { registry.walletUnits().take(1).map { it.id } }
+            .map { registry.walletUnit(it) }
+            .distinctBy { it.id }
+        if (units.isEmpty()) error("A linked presentation needs at least one wallet unit")
+        val leadUnit = units.first()
+        val verifierRef = registry.verifier(request.verifierId)
+        val query = request.dcqlQuery ?: VerifierDriver.defaultDcqlQuery()
+        val pooled = units.size > 1
+
+        sink.step(
+            flowId,
+            "Starting LINKED OpenID4VP presentation to '${verifierRef.label}' across ${units.size} unit(s): " +
+                units.joinToString(", ") { "'${it.label}'" } +
+                " — the linking-issuer countermeasure will decide whether their keys are co-resident",
+        )
+
+        return runExchange(
+            flowId,
+            leadUnit = leadUnit,
+            verifierRef = verifierRef,
+            query = query,
+            pooled = pooled,
+            linkMode = true,
+        ) { credentialQuery, _ ->
+            val wantedVcts = credentialQuery.vctValues()
+            matchAcrossUnitsLinked(credentialQuery, wantedVcts, units)
+        }
+    }
+
+    /**
      * The shared OpenID4VP exchange. [resolve] decides, per credential query, which unit
      * and credential answer it and with which key its binding is signed — the only thing
      * that differs between a single-holder and a pooled presentation.
@@ -184,6 +249,7 @@ class PresentationService(
         verifierRef: VerifierRef,
         query: JsonObject,
         pooled: Boolean,
+        linkMode: Boolean = false,
         resolve: (CredentialQuery, Int) -> Contribution,
     ): PresentationResult {
         val client = tracedHttpClient(flowId, sink, scanner = scanner, walletUnitId = leadUnit.id)
@@ -366,13 +432,28 @@ class PresentationService(
                 walletUnitId = leadUnit.id,
             )
 
+            // The linking-issuer countermeasure runs after the reference verifier's own
+            // verdict: the base presentation can be spec-valid (the reference verifier
+            // accepts a pooled vp_token — that is Attack A) and still be rejected here
+            // because the keys are not co-resident.
+            val linkVerdict = if (linkMode) computeLink(flowId, leadUnit, resolved.nonce, presented) else null
+            val linkAccepted = linkVerdict?.accepted ?: true
+            val overallAccepted = accepted && linkAccepted
+
             val walletResponse = verifier.walletResponse(client, flowId, transaction.transactionId, verifierRef)
+
+            val error = when {
+                !accepted -> "The verifier rejected the vp_token: ${rejection ?: "no reason given"}"
+                !linkAccepted -> "The verifier rejected the presentation on the pooling check: " +
+                    (linkVerdict?.reason ?: "no valid link credential")
+                else -> null
+            }
 
             PresentationResult(
                 flowId = flowId,
-                status = if (accepted) "presented" else "rejected",
+                status = if (overallAccepted) "presented" else "rejected",
                 walletUnitId = leadUnit.id,
-                error = if (accepted) null else "The verifier rejected the vp_token: ${rejection ?: "no reason given"}",
+                error = error,
                 transactionId = transaction.transactionId,
                 authorizationRequestUri = requestUri,
                 requestedClaims = requestedPaths.map { it.toString() },
@@ -380,7 +461,8 @@ class PresentationService(
                 presentedCredentialIds = presentedCredentials.map { it.id },
                 walletResponse = walletResponse,
                 pooled = pooled && distinctUnits > 1,
-                contributions = if (pooled) contributions else emptyList(),
+                contributions = if (pooled || linkMode) contributions else emptyList(),
+                link = linkVerdict,
             )
         } catch (failure: Exception) {
             sink.error(flowId, failure.message ?: failure.toString())
@@ -424,6 +506,65 @@ class PresentationService(
         (meta?.get("vct_values") as? JsonArray)
             ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
             .orEmpty()
+
+    /**
+     * The countermeasure, computed over a completed exchange: gather a WUA co-residency
+     * attestation from each contributing unit, ask the linking issuer to bind the keys,
+     * then have the verifier check the resulting link credential against the `cnf` keys
+     * it reads off the presented credentials.
+     */
+    private fun computeLink(
+        flowId: String,
+        leadUnit: WalletUnit,
+        challenge: String,
+        presented: List<Pair<Presented, CredentialQuery>>,
+    ): LinkVerdict {
+        // Phase 3 input: one attestation per contributing unit, over the key(s) it signed
+        // with, each carrying a proof of possession bound to this presentation's nonce.
+        val attestations = presented
+            .groupBy { it.first.contribution.unit.id }
+            .values
+            .map { entries ->
+                val unit = entries.first().first.contribution.unit
+                val keys = entries.map { it.first.contribution.boundKey }
+                crypto.record(
+                    flowId = flowId,
+                    operation = "sign",
+                    actor = "wallet",
+                    artifact = "WUA co-residency attestation",
+                    summary = "Wallet unit '${unit.label}' asserts, under its WUA, that the key(s) it " +
+                        "presented are co-resident in its WSCD, with a proof of possession per key over " +
+                        "this presentation's nonce",
+                    algorithm = "ES256",
+                    keys = keys.map { it.asDeviceKeyRef() },
+                    binds = mapOf(
+                        "keys" to keys.joinToString(", ") { it.computeThumbprint().toString() },
+                        "challenge" to challenge,
+                    ),
+                    caveat = "The proof of possession is load-bearing: a unit can only vouch for a key " +
+                        "whose private half it holds, so it cannot claim another unit's key as co-resident. " +
+                        "This is what makes a pooled pair fall under two WUAs.",
+                    walletUnitId = unit.id,
+                )
+                unit.keys.coResidencyAttestation(keys, challenge)
+            }
+        val linkResult = linkingIssuer.issueLink(attestations, challenge, flowId, leadUnit.id)
+
+        // Step 4: the verifier reads the keys from the credentials themselves, not from
+        // anything the wallet asserts out of band.
+        val presentedKeys = presented.map { (p, _) ->
+            cnfKeyOf(p.vpToken) ?: p.contribution.boundKey.toPublicJWK()
+        }
+        return linkingVerifier.verify(presentedKeys, linkResult, flowId, leadUnit.id)
+    }
+
+    /** The `cnf` device key an SD-JWT VC presentation is bound to, read from its issuer JWT. */
+    private fun cnfKeyOf(vpToken: String): ECKey? = runCatching {
+        val sdJwt = Jose.parseSdJwt(vpToken) ?: return null
+        val cnf = sdJwt.issuerJwt.claims?.get("cnf") as? JsonObject ?: return null
+        val jwk = cnf["jwk"] as? JsonObject ?: return null
+        ECKey.parse(jwk.toString())
+    }.getOrNull()
 
     /** The vct of a stored SD-JWT VC, read from the issuer-signed JWT payload. */
     private fun vctOf(raw: String): String? = runCatching {
@@ -504,6 +645,37 @@ class PresentationService(
         }
         error(
             "None of the pooled wallet units holds an SD-JWT VC for query '${query.id.value}'" +
+                (wantedVcts.firstOrNull()?.let { " (vct $it)" } ?: "") + "; issue one first",
+        )
+    }
+
+    /**
+     * Like [matchAcrossUnits], but consumes a *single-use* batch copy: it prefers an unused
+     * copy and marks it spent, so repeated linked presentations rotate through the batch and
+     * present a fresh key each time. This is what makes batch issuance meaningful under the
+     * countermeasure — each session shows a different key pair (verifier unlinkability, paper
+     * C4), yet every pair is certified co-resident by the linking issuer (C5). Falls back to
+     * the newest copy once the batch is exhausted.
+     */
+    private fun matchAcrossUnitsLinked(
+        query: CredentialQuery,
+        wantedVcts: List<String>,
+        units: List<WalletUnit>,
+    ): Contribution {
+        for (unit in units) {
+            val sdJwts = unit.store.all().filter { it.format.contains("sd-jwt") || it.raw.contains('~') }
+            val candidates =
+                if (wantedVcts.isEmpty()) sdJwts
+                else sdJwts.filter { vctOf(it.raw) in wantedVcts }
+            val match = candidates.firstOrNull { !unit.store.isUsed(it.id) } ?: candidates.lastOrNull()
+            if (match != null) {
+                unit.store.markUsed(match.id)
+                val boundKey = unit.store.deviceKeyFor(match.id) ?: unit.keys.deviceKey
+                return Contribution(unit, match, boundKey)
+            }
+        }
+        error(
+            "None of the wallet units holds an SD-JWT VC for query '${query.id.value}'" +
                 (wantedVcts.firstOrNull()?.let { " (vct $it)" } ?: "") + "; issue one first",
         )
     }

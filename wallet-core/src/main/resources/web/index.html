@@ -361,6 +361,18 @@ dialog .hint{margin-top:0;margin-bottom:12px}
               its own key binding with its own device key; the verifier accepts one response
               carrying two credentials from two devices.
             </div>
+            <div class="field" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+              <label>Countermeasure — linking issuer</label>
+              <div class="hint" style="margin-top:0">
+                Runs the same request as above, but each unit proves its key is co-resident in
+                its WSCD, a linking issuer binds the keys, and the verifier checks the link.
+                One unit (a genuine holder) is accepted; a pool of two or more is rejected —
+                their keys are not co-resident, so no link credential can be issued.
+              </div>
+            </div>
+            <div class="row">
+              <button class="primary" id="runLinked">Present with link credential (countermeasure)</button>
+            </div>
           </div>
         </div>
         <div class="card">
@@ -911,6 +923,42 @@ $('runPool').onclick = async () => {
                 <tbody>${table}</tbody></table>` : '') +
       `<pre>${esc(JSON.stringify(res, null, 2))}</pre>`;
   } finally { $('runPool').disabled = false; }
+};
+
+$('runLinked').onclick = async () => {
+  const query = readDcql();
+  if (!query.ok) { $('vpOut').innerHTML = `<pre class="err">${esc(query.error)}</pre>`; return; }
+  const chosen = [...$('poolUnits').querySelectorAll('input:checked')].map(i => i.value);
+  if (chosen.length < 1) {
+    $('vpOut').innerHTML = '<pre class="err">Pick one unit for a genuine holder, or two or more to test pooling.</pre>';
+    return;
+  }
+  $('runLinked').disabled = true;
+  $('vpOut').innerHTML = '<span class="empty">Presenting with link credential…</span>';
+  try {
+    const res = await post('/present/linked', {
+      dcqlQuery: query.value,
+      walletUnitIds: chosen,
+      verifierId: sel.verifier,
+    });
+    const link = res.link;
+    // The verdict badge: accepted only if both the reference verifier and the link check pass.
+    const linkBadge = link
+      ? (link.accepted
+          ? '<span class="badge ok">link verified — co-resident</span>'
+          : '<span class="badge err">pooling blocked — not co-resident</span>')
+      : '';
+    const table = (res.contributions || []).map(c =>
+      `<tr><td><code>${esc(c.queryId)}</code></td><td>${esc(c.walletUnitLabel)}</td>` +
+      `<td>${keyChip({ role: 'device', thumbprint: c.deviceKeyThumbprint })}</td></tr>`).join('');
+    $('vpOut').innerHTML =
+      `<div class="row" style="margin-bottom:9px">
+         <span class="badge ${res.status === 'presented' ? 'ok' : 'err'}">${esc(res.status)}</span>${linkBadge}</div>` +
+      (link && !link.accepted && link.reason ? `<pre class="err">${esc(link.reason)}</pre>` : '') +
+      (table ? `<table class="mini"><thead><tr><th>query</th><th>unit</th><th>device key</th></tr></thead>
+                <tbody>${table}</tbody></table>` : '') +
+      `<pre>${esc(JSON.stringify(res, null, 2))}</pre>`;
+  } finally { $('runLinked').disabled = false; }
 };
 
 /* --------------------------------------------------------------------- log */

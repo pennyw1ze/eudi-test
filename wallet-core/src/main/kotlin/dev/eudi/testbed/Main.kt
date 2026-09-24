@@ -19,8 +19,11 @@ private val crypto = CryptoSink(session)
 private val scanner = CryptoScanner(crypto)
 private val registry = Registry(crypto)
 private val verifierDriver = VerifierDriver(sink)
+private val linkingIssuer = LinkingIssuer(crypto)
+private val linkingVerifier = LinkingVerifier(listOf(linkingIssuer.trustedJwk()), crypto)
 private val issuanceService = IssuanceService(sink, scanner, registry)
-private val presentationService = PresentationService(sink, crypto, scanner, registry, verifierDriver)
+private val presentationService =
+    PresentationService(sink, crypto, scanner, registry, verifierDriver, linkingIssuer, linkingVerifier)
 private val statusService = StatusService(registry)
 
 fun main() {
@@ -331,6 +334,17 @@ fun Application.testbed() {
             post("/present/pooled") {
                 val request = runCatching { call.receive<PooledPresentationRequest>() }.getOrElse { PooledPresentationRequest() }
                 call.respond(presentationService.presentPooled(request))
+            }
+
+            /**
+             * The linking-issuer countermeasure: the same request as a pooled presentation,
+             * but each contributing unit proves co-residency of the key it signs with, the
+             * linking issuer binds the keys, and the verifier runs the extra link check. One
+             * unit is accepted; a pool of two or more is now rejected.
+             */
+            post("/present/linked") {
+                val request = runCatching { call.receive<LinkedPresentationRequest>() }.getOrElse { LinkedPresentationRequest() }
+                call.respond(presentationService.presentLinked(request))
             }
 
             // ------------------------------------------------------------ traces

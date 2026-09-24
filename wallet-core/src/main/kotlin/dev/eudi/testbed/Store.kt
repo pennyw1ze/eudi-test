@@ -34,6 +34,16 @@ class CredentialStore {
      */
     private val deviceKeys = ConcurrentHashMap<String, ECKey>()
 
+    /**
+     * Batch copies already spent in a presentation.
+     *
+     * Batch issuance exists so a fresh single-use copy — with a fresh key — is presented
+     * each time, giving verifier unlinkability (paper C4). The linked presentation path
+     * honours that: it consumes an unused copy and records it here so the next presentation
+     * rotates to another.
+     */
+    private val used = ConcurrentHashMap.newKeySet<String>()
+
     fun add(
         configurationId: String,
         format: String,
@@ -57,14 +67,22 @@ class CredentialStore {
     /** The private device key credential [id] is bound to, if one was recorded at issuance. */
     fun deviceKeyFor(id: String): ECKey? = deviceKeys[id]
 
+    /** Whether this copy has already been spent in a single-use (linked) presentation. */
+    fun isUsed(id: String): Boolean = id in used
+
+    /** Record that a copy has been spent, so the next presentation rotates to a fresh one. */
+    fun markUsed(id: String) { used.add(id) }
+
     fun all(): List<StoredCredential> = credentials.values.sortedBy { it.issuedAt }
     fun get(id: String): StoredCredential? = credentials[id]
     fun remove(id: String): Boolean {
         deviceKeys.remove(id)
+        used.remove(id)
         return credentials.remove(id) != null
     }
     fun clear() {
         credentials.clear()
         deviceKeys.clear()
+        used.clear()
     }
 }

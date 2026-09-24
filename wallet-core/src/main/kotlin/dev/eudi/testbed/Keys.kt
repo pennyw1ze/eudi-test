@@ -234,6 +234,57 @@ class WalletKeys(
     fun signAsWalletProvider(header: JWSHeader, claims: JWTClaimsSet): SignedJWT =
         SignedJWT(header, claims).apply { sign(ECDSASigner(attestationKey)) }
 
+    /**
+     * A WUA-signed statement that [keys] are co-resident in this unit's WSCD, carrying a
+     * fresh proof of possession for each key over [challenge].
+     *
+     * This is the evidence a linking issuer consumes to decide co-residency (paper
+     * §"The linking issuer role", Phase 3). The proof of possession is the load-bearing
+     * part: this unit can only include a key whose private half it holds, so it cannot
+     * vouch for a key that lives in another unit's WSCD. Two credentials pooled from two
+     * units therefore yield two attestations under two *different* WUA keys, which the
+     * linking issuer refuses to link — which is exactly what closes Attack A.
+     *
+     * Signed by [attestationKey] (the unit's WUA key) and carrying [attestationCertificate]
+     * in `x5c`, so the linking issuer can identify the attesting WUA and check that every
+     * presented key was attested under the same one.
+     */
+    fun coResidencyAttestation(keys: List<ECKey>, challenge: String): SignedJWT {
+        val now = Instant.now()
+        val coResidentKeys = keys.map { key ->
+            // Proof of possession: the private key signs the challenge. A unit that does not
+            // hold this key cannot produce this, so it cannot claim the key as co-resident.
+            val pop = SignedJWT(
+                JWSHeader.Builder(JWSAlgorithm.ES256).type(JOSEObjectType("key-pop+jwt")).build(),
+                JWTClaimsSet.Builder()
+                    .claim("challenge", challenge)
+                    .claim("jkt", key.toPublicJWK().computeThumbprint().toString())
+                    .issueTime(Date.from(now))
+                    .build(),
+            ).apply { sign(ECDSASigner(key)) }
+            mapOf(
+                "jwk" to key.toPublicJWK().toJSONObject(),
+                "pop" to pop.serialize(),
+            )
+        }
+
+        val claims = JWTClaimsSet.Builder()
+            .issueTime(Date.from(now))
+            .expirationTime(Date.from(now.plusSeconds(300)))
+            .claim("challenge", challenge)
+            .claim("wua", attestationKey.toPublicJWK().computeThumbprint().toString())
+            .claim("coresident_keys", coResidentKeys)
+            .build()
+
+        return SignedJWT(
+            JWSHeader.Builder(JWSAlgorithm.ES256)
+                .type(JOSEObjectType("wua-coresidency+jwt"))
+                .x509CertChain(listOf(attestationCertificate.asX5cEntry()))
+                .build(),
+            claims,
+        ).apply { sign(ECDSASigner(attestationKey)) }
+    }
+
     /** The signer the issuance flow hands to `ProofSpecification.JwtProof`. */
     fun proofSigner(
         nonce: String? = null,
