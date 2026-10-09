@@ -32,3 +32,10 @@ wallet-core/bin/
 # unpublished paper — never commit
 docs/no_pooling_no_party.tex
 *.tex
+
+# paper folder: its own private repo (pennyw1ze/eudi-paper), cloned into docs/paper
+docs/paper/
+
+# raw attestation chains recorded on the author's phone (device identifiers) — kept in the
+# private repo; copy them here to run LinkingIssuerTest's real-device case
+attestkey-probe/results/
