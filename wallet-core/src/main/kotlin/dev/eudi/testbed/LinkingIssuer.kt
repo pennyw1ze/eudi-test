@@ -7,8 +7,8 @@ import com.nimbusds.jose.crypto.ECDSASigner
 import com.nimbusds.jose.crypto.ECDSAVerifier
 import com.nimbusds.jose.jwk.Curve
 import com.nimbusds.jose.jwk.ECKey
-import com.nimbusds.jose.jwk.JWK
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator
+import com.nimbusds.jose.util.Base64URL
 import com.nimbusds.jose.util.X509CertUtils
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
@@ -17,6 +17,9 @@ import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import java.math.BigInteger
+import java.security.MessageDigest
+import java.security.PublicKey
+import java.security.cert.X509Certificate
 import java.time.Instant
 import java.util.Date
 import java.util.UUID
@@ -29,8 +32,8 @@ data class LinkResult(
     val credential: String?,
     /** Thumbprints of the keys the link credential covers. */
     val linkedKeyThumbprints: List<String>,
-    /** How many distinct WUAs the presented keys were attested under. 1 means co-resident. */
-    val distinctWua: Int,
+    /** How many distinct attest keys the presented keys were attested by. 1 means co-resident. */
+    val distinctAttestKeys: Int,
     val reason: String?,
 )
 
@@ -38,118 +41,92 @@ data class LinkResult(
  * The **linking issuer** of the paper's countermeasure (§"The linking issuer role").
  *
  * It performs the one observation batch issuance has severed by presentation time: that
- * two keys are co-resident in a single WSCD. It reads a WUA-signed co-residency
- * attestation for each key (minted by that key's wallet unit, see
- * [WalletKeys.coResidencyAttestation]), verifies the WUA signature and a fresh proof of
- * possession per key, and — only if every key was attested under **one** WUA — issues a
- * single-use link credential binding exactly those keys together.
+ * two keys are co-resident in a single WSCD. Its evidence is the WSCD's own key attestation,
+ * as Android KeyMint produces it with an application attest key: each key arrives with its
+ * attestation chain — the key's certificate, signed by the WSCD's attest key, then the attest
+ * key's certificate up to an attestation root. A single-use link credential is issued only if
+ * every key is attested by **one** attest key.
  *
- * The check is the whole point: pooled credentials come from two units, so they arrive
- * with two attestations under two different WUA keys, and the linking issuer refuses.
- * A genuine holder presenting two of their own credentials has both keys under one WUA,
- * and is linked. This realises assumption `as:li` (the linking issuer is honest and
- * issues a link only over keys attested co-resident under one WUA).
+ * Three checks carry the soundness; each closes a forgery the probe on a real device
+ * (attestkey-probe/) exercised:
+ *  - the chain ends at a trusted attestation root, so a self-made "attest key" is worthless;
+ *  - the attest key's own attestation says purposes == {ATTEST_KEY} and origin GENERATED. An
+ *    ordinary WSCD key signs whatever it is given, so it could put Bob's key in a certificate;
+ *    only its purpose gives it away (names do not: Android uses one subject for every key);
+ *  - each key's attestation says origin GENERATED, since an imported key existed outside.
+ * An attest key signs nothing but the attestation of a key generated in its own WSCD, so a
+ * pooled pair necessarily arrives under two attest keys, and the linking issuer refuses.
  *
- * Trust of the WUAs themselves is stubbed to accept any chain, mirroring the reference
- * issuer's "Trusting all Wallet Providers"; what makes the role sound here is not who
- * signed the WUA but that a valid proof of possession accompanies every linked key.
+ * This realises assumption `as:li` (the linking issuer is honest and issues a link only over
+ * keys attested co-resident), with `as:wscd` grounded in the attest key. The attest key is a
+ * stable per-WSCD value, so whoever plays this role can recognise a wallet across requests;
+ * that is the privacy cost of observing co-residency, and an argument for giving the role to
+ * the wallet provider, which already knows the device.
  */
-class LinkingIssuer(private val crypto: CryptoSink) {
+class LinkingIssuer(
+    private val crypto: CryptoSink,
+    trustedRoots: List<X509Certificate>,
+) {
 
     val id: String = "https://localhost/eudi-testbed/linking-issuer"
     val vct: String = "urn:eudi:link:1"
 
     private val signingKey: ECKey = ECKeyGenerator(Curve.P_256).keyID("linking-issuer-${System.nanoTime()}").generate()
     private val certificate = selfSign(signingKey)
+    private val rootKeys: List<PublicKey> = trustedRoots.map { it.publicKey }
 
     /** The public key the verifier keeps on its trusted list to check link credentials. */
     fun trustedJwk(): ECKey = signingKey.toPublicJWK()
 
+    /** One key that passed the attestation checks, and the attest key that vouches for it. */
+    private class Attested(val key: ECKey, val attestKey: String)
+
     /**
-     * Verify the co-residency attestations and, if the keys are co-resident under one WUA,
-     * issue a link credential over them.
+     * Verify each key's attestation chain and, if a single attest key covers all of them,
+     * issue a link credential over the keys.
      */
     fun issueLink(
-        attestations: List<SignedJWT>,
-        challenge: String,
+        chains: List<List<X509Certificate>>,
         flowId: String,
         walletUnitId: String? = null,
     ): LinkResult {
-        val perWua = mutableMapOf<String, MutableList<ECKey>>()
-
-        for (attestation in attestations) {
-            val wuaKey = attestation.x5cLeafKey()
-                ?: return refuse(flowId, walletUnitId, "a co-residency attestation carried no usable WUA certificate")
-            if (!attestation.verifiedBy(wuaKey)) {
-                return refuse(flowId, walletUnitId, "a co-residency attestation's WUA signature did not verify")
-            }
-            val claims = attestation.jwtClaimsSet
-            if (claims.getStringClaim("challenge") != challenge) {
-                return refuse(flowId, walletUnitId, "a co-residency attestation was not bound to this presentation's challenge")
-            }
-            val wuaThumbprint = wuaKey.computeThumbprint().toString()
-
-            val entries = runCatching { claims.getListClaim("coresident_keys") }.getOrNull().orEmpty()
-            if (entries.isEmpty()) {
-                return refuse(flowId, walletUnitId, "a co-residency attestation listed no keys")
-            }
-            for (entry in entries) {
-                @Suppress("UNCHECKED_CAST")
-                val map = entry as? Map<String, Any?> ?: return refuse(flowId, walletUnitId, "malformed co-residency key entry")
-                @Suppress("UNCHECKED_CAST")
-                val jwkMap = map["jwk"] as? Map<String, Any?>
-                    ?: return refuse(flowId, walletUnitId, "co-residency key entry carried no jwk")
-                val popCompact = map["pop"] as? String
-                    ?: return refuse(flowId, walletUnitId, "co-residency key entry carried no proof of possession")
-
-                val key = runCatching { JWK.parse(jwkMap as Map<String, Any>).toECKey().toPublicJWK() }.getOrNull()
-                    ?: return refuse(flowId, walletUnitId, "co-residency key entry carried an unparseable jwk")
-                val keyThumbprint = key.computeThumbprint().toString()
-
-                // Proof of possession: only the holder of this key's private half could have
-                // signed the challenge under it. This is what stops one unit vouching for
-                // another unit's key.
-                val pop = runCatching { SignedJWT.parse(popCompact) }.getOrNull()
-                    ?: return refuse(flowId, walletUnitId, "co-residency proof of possession was unparseable")
-                if (!pop.verifiedBy(key)) {
-                    return refuse(flowId, walletUnitId, "proof of possession did not verify under key $keyThumbprint")
-                }
-                if (pop.jwtClaimsSet.getStringClaim("challenge") != challenge) {
-                    return refuse(flowId, walletUnitId, "proof of possession was not bound to this challenge")
-                }
-
-                perWua.getOrPut(wuaThumbprint) { mutableListOf() }.add(key)
+        if (chains.isEmpty()) return refuse(flowId, walletUnitId, "no keys to link")
+        val attested = chains.map { chain ->
+            try {
+                attested(chain)
+            } catch (e: IllegalArgumentException) {
+                return refuse(flowId, walletUnitId, e.message ?: "an attestation chain is invalid")
             }
         }
 
-        val distinctWua = perWua.size
-        val allKeys = perWua.values.flatten().distinctBy { it.computeThumbprint().toString() }
+        val byAttestKey = attested.groupBy { it.attestKey }
+        val allKeys = attested.map { it.key }.distinctBy { it.computeThumbprint().toString() }
         val thumbprints = allKeys.map { it.computeThumbprint().toString() }
 
-        if (distinctWua != 1) {
+        if (byAttestKey.size != 1) {
             crypto.record(
                 flowId = flowId,
                 operation = "verify",
                 actor = "linking-issuer",
-                artifact = "Co-residency attestations",
+                artifact = "Key attestation chains",
                 summary = "Linking issuer refused to issue a link credential: the presented keys were " +
-                    "attested under $distinctWua distinct WUAs, so they are not co-resident in one WSCD",
+                    "attested by ${byAttestKey.size} distinct attest keys, so they are not co-resident in one WSCD",
                 keys = allKeys.map { it.asLinkedKeyRef() },
                 binds = mapOf(
-                    "distinct WUAs" to distinctWua.toString(),
+                    "distinct attest keys" to byAttestKey.size.toString(),
                     "keys" to thumbprints.joinToString(", "),
                 ),
-                caveat = "This is the countermeasure doing its job: two credentials pooled from two " +
-                    "wallet units carry two WUAs, and no single WUA can prove possession of both device " +
-                    "keys, so co-residency cannot be certified. Attack A is blocked here.",
+                caveat = "This is the countermeasure doing its job: credentials pooled from two wallet " +
+                    "units are bound to keys generated in two WSCDs, and an attest key attests only keys " +
+                    "generated in its own WSCD, so no single attest key covers both. Attack A is blocked here.",
                 walletUnitId = walletUnitId,
             )
             return LinkResult(
                 issued = false,
                 credential = null,
                 linkedKeyThumbprints = thumbprints,
-                distinctWua = distinctWua,
-                reason = "keys attested under $distinctWua distinct WUAs — not co-resident",
+                distinctAttestKeys = byAttestKey.size,
+                reason = "keys attested by ${byAttestKey.size} distinct attest keys — not co-resident",
             )
         }
 
@@ -160,7 +137,6 @@ class LinkingIssuer(private val crypto: CryptoSink) {
             .expirationTime(Date.from(now.plusSeconds(300)))
             .jwtID(UUID.randomUUID().toString())
             .claim("vct", vct)
-            .claim("challenge", challenge)
             .claim("linked_keys", allKeys.map { it.toJSONObject() })
             .claim("linked_key_thumbprints", thumbprints)
             .build()
@@ -178,20 +154,22 @@ class LinkingIssuer(private val crypto: CryptoSink) {
             operation = "sign",
             actor = "linking-issuer",
             artifact = "Link credential",
-            summary = "Linking issuer certified that the ${allKeys.size} presented keys are co-resident " +
-                "in one WSCD and issued a single-use link credential binding them together",
+            summary = "Linking issuer verified that the ${allKeys.size} presented keys were generated in one " +
+                "WSCD — all attested by the same attest key, itself attested up to the platform root — and " +
+                "issued a single-use link credential binding them together",
             algorithm = "ES256",
             keys = allKeys.map { it.asLinkedKeyRef() },
             binds = mapOf(
                 "linked keys" to thumbprints.joinToString(", "),
+                "attest key" to byAttestKey.keys.single(),
                 "linking issuer" to id,
                 "jti (single-use)" to claims.jwtid,
             ),
             header = lenientJson.parseToJsonElement(linkCredential.header.toString()),
             payload = lenientJson.parseToJsonElement(claims.toString()),
-            caveat = "Carries the two device-key values in clear, so it is a stronger correlator than " +
-                "either credential; it is single-use (fresh jti, bound to this presentation's challenge) " +
-                "so it cannot be replayed or reused across sessions (paper §Unlinkability).",
+            caveat = "Carries the device-key values in clear, so it is a stronger correlator than either " +
+                "credential; it is single-use (fresh jti), so it cannot be reused across sessions (paper " +
+                "§Unlinkability). The linking issuer saw the attest key, a stable per-WSCD value.",
             compact = linkCredential.serialize(),
             walletUnitId = walletUnitId,
         )
@@ -200,9 +178,47 @@ class LinkingIssuer(private val crypto: CryptoSink) {
             issued = true,
             credential = linkCredential.serialize(),
             linkedKeyThumbprints = thumbprints,
-            distinctWua = 1,
+            distinctAttestKeys = 1,
             reason = null,
         )
+    }
+
+    /**
+     * The checks on one key's chain (key, attest key, ..., root). Throws IllegalArgumentException
+     * with the reason when the chain does not prove the key was generated under an attest key.
+     */
+    private fun attested(chain: List<X509Certificate>): Attested {
+        require(chain.size >= 2) { "a key arrived without its attestation chain" }
+        val leaf = chain[0]
+        val key = runCatching { ECKey.parse(leaf).toPublicJWK() }.getOrNull()
+            ?: throw IllegalArgumentException("an attested key is not an EC key")
+        val label = key.computeThumbprint().toString().take(12)
+
+        require(chain.zipWithNext().all { (child, parent) -> child.signedBy(parent.publicKey) }) {
+            "the attestation chain of key $label does not verify"
+        }
+        val top = chain.last()
+        require(rootKeys.any { it.encoded.contentEquals(top.publicKey.encoded) || top.signedBy(it) }) {
+            "the attestation chain of key $label is not anchored at a trusted attestation root"
+        }
+
+        val attestKey = KeyDescription.of(chain[1])
+        require(attestKey != null && attestKey.purposes == setOf(KeyDescription.PURPOSE_ATTEST_KEY)) {
+            "key $label is certified by a key whose purposes are ${attestKey?.purposes ?: "unattested"}, not " +
+                "{ATTEST_KEY(${KeyDescription.PURPOSE_ATTEST_KEY})}: an ordinary key signs whatever it is given, " +
+                "so its certificate proves nothing about where the key was generated"
+        }
+        require(attestKey.origin == KeyDescription.ORIGIN_GENERATED) {
+            "the attest key of key $label was not generated in its WSCD"
+        }
+        val description = KeyDescription.of(leaf)
+        require(description != null && description.origin == KeyDescription.ORIGIN_GENERATED) {
+            "key $label was not generated in the WSCD (origin ${description?.origin ?: "unattested"})"
+        }
+        require(description.securityLevel == attestKey.securityLevel) {
+            "key $label and its attest key live at different security levels"
+        }
+        return Attested(key, chain[1].publicKey.thumbprint())
     }
 
     private fun refuse(flowId: String, walletUnitId: String?, reason: String): LinkResult {
@@ -210,12 +226,12 @@ class LinkingIssuer(private val crypto: CryptoSink) {
             flowId = flowId,
             operation = "verify",
             actor = "linking-issuer",
-            artifact = "Co-residency attestations",
+            artifact = "Key attestation chains",
             summary = "Linking issuer refused to issue a link credential: $reason",
             binds = mapOf("reason" to reason),
             walletUnitId = walletUnitId,
         )
-        return LinkResult(issued = false, credential = null, linkedKeyThumbprints = emptyList(), distinctWua = 0, reason = reason)
+        return LinkResult(issued = false, credential = null, linkedKeyThumbprints = emptyList(), distinctAttestKeys = 0, reason = reason)
     }
 
     companion object {
@@ -235,6 +251,14 @@ class LinkingIssuer(private val crypto: CryptoSink) {
         }
     }
 }
+
+/** True when this certificate's signature verifies under [key]. */
+private fun X509Certificate.signedBy(key: PublicKey): Boolean =
+    runCatching { verify(key) }.isSuccess
+
+/** SHA-256 over the encoded public key, base64url: names an attest key whatever its algorithm. */
+private fun PublicKey.thumbprint(): String =
+    Base64URL.encode(MessageDigest.getInstance("SHA-256").digest(encoded)).toString()
 
 /** The EC public key in a JWS's `x5c` leaf certificate, if present and parseable. */
 internal fun SignedJWT.x5cLeafKey(): ECKey? = runCatching {

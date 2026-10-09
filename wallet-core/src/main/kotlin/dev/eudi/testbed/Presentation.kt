@@ -65,9 +65,9 @@ data class PooledPresentationRequest(
 /**
  * A *linkable* presentation: the countermeasure from the paper (§"The linking issuer
  * role"). The listed units answer the request exactly as [PooledPresentationRequest]
- * does, but each contributing unit also produces a WUA co-residency attestation for the
- * key it signs with, the linking issuer is asked to bind those keys, and the verifier
- * runs the extra link check.
+ * does, but each contributing unit also forwards the attestation chain its WSCD issued
+ * for the key it signs with, the linking issuer is asked to bind those keys, and the
+ * verifier runs the extra link check.
  *
  * With one unit this is a genuine single-holder presentation and is accepted. With two
  * or more units it is Attack A, and the link check now rejects it — the keys are not
@@ -198,9 +198,9 @@ class PresentationService(
 
     /**
      * Linkable presentation — the countermeasure. Runs the same exchange as a pooled
-     * presentation, but each contributing unit also proves co-residency of the key it
-     * signs with, the linking issuer is asked to bind those keys, and the verifier runs
-     * the extra link check (paper §"The linking issuer role").
+     * presentation, but each contributing unit also forwards its WSCD's attestation of the
+     * key it signs with, the linking issuer is asked to bind those keys, and the verifier
+     * runs the extra link check (paper §"The linking issuer role").
      *
      * One unit is a genuine holder and is accepted; two or more units are Attack A and
      * are now rejected, because their keys live in different WSCDs and no link credential
@@ -436,7 +436,7 @@ class PresentationService(
             // verdict: the base presentation can be spec-valid (the reference verifier
             // accepts a pooled vp_token — that is Attack A) and still be rejected here
             // because the keys are not co-resident.
-            val linkVerdict = if (linkMode) computeLink(flowId, leadUnit, resolved.nonce, presented) else null
+            val linkVerdict = if (linkMode) computeLink(flowId, leadUnit, presented) else null
             val linkAccepted = linkVerdict?.accepted ?: true
             val overallAccepted = accepted && linkAccepted
 
@@ -508,47 +508,42 @@ class PresentationService(
             .orEmpty()
 
     /**
-     * The countermeasure, computed over a completed exchange: gather a WUA co-residency
-     * attestation from each contributing unit, ask the linking issuer to bind the keys,
-     * then have the verifier check the resulting link credential against the `cnf` keys
-     * it reads off the presented credentials.
+     * The countermeasure, computed over a completed exchange: hand the linking issuer the
+     * attestation chain of every presented key, let it decide whether one attest key covers
+     * them all, then have the verifier check the resulting link credential against the `cnf`
+     * keys it reads off the presented credentials.
      */
     private fun computeLink(
         flowId: String,
         leadUnit: WalletUnit,
-        challenge: String,
         presented: List<Pair<Presented, CredentialQuery>>,
     ): LinkVerdict {
-        // Phase 3 input: one attestation per contributing unit, over the key(s) it signed
-        // with, each carrying a proof of possession bound to this presentation's nonce.
-        val attestations = presented
-            .groupBy { it.first.contribution.unit.id }
-            .values
-            .map { entries ->
-                val unit = entries.first().first.contribution.unit
-                val keys = entries.map { it.first.contribution.boundKey }
-                crypto.record(
-                    flowId = flowId,
-                    operation = "sign",
-                    actor = "wallet",
-                    artifact = "WUA co-residency attestation",
-                    summary = "Wallet unit '${unit.label}' asserts, under its WUA, that the key(s) it " +
-                        "presented are co-resident in its WSCD, with a proof of possession per key over " +
-                        "this presentation's nonce",
-                    algorithm = "ES256",
-                    keys = keys.map { it.asDeviceKeyRef() },
-                    binds = mapOf(
-                        "keys" to keys.joinToString(", ") { it.computeThumbprint().toString() },
-                        "challenge" to challenge,
-                    ),
-                    caveat = "The proof of possession is load-bearing: a unit can only vouch for a key " +
-                        "whose private half it holds, so it cannot claim another unit's key as co-resident. " +
-                        "This is what makes a pooled pair fall under two WUAs.",
-                    walletUnitId = unit.id,
-                )
-                unit.keys.coResidencyAttestation(keys, challenge)
-            }
-        val linkResult = linkingIssuer.issueLink(attestations, challenge, flowId, leadUnit.id)
+        // Phase 3 input: each key's attestation chain, as its WSCD produced it when the key was
+        // generated. A wallet can forward a chain but not make one: only the WSCD's attest key
+        // signs it, and only for keys generated in that WSCD.
+        val chains = presented.map { (p, _) ->
+            val unit = p.contribution.unit
+            val key = p.contribution.boundKey
+            val chain = unit.keys.attestationChain(key).orEmpty()
+            crypto.record(
+                flowId = flowId,
+                operation = "verify",
+                actor = "wallet",
+                artifact = "Key attestation chain",
+                summary = "Wallet unit '${unit.label}' forwards the attestation chain its WSCD issued for " +
+                    "the key it presented with: the key's certificate, signed by the WSCD's attest key, " +
+                    "then the attest key's chain up to the platform attestation root",
+                keys = listOf(key.asDeviceKeyRef()),
+                binds = mapOf(
+                    "key" to key.computeThumbprint().toString(),
+                    "chain length" to chain.size.toString(),
+                    "issued by" to (chain.getOrNull(0)?.issuerX500Principal?.name ?: "no chain"),
+                ),
+                walletUnitId = unit.id,
+            )
+            chain
+        }
+        val linkResult = linkingIssuer.issueLink(chains, flowId, leadUnit.id)
 
         // Step 4: the verifier reads the keys from the credentials themselves, not from
         // anything the wallet asserts out of band.
