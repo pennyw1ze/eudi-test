@@ -215,9 +215,9 @@ but *structurally impossible* — that is Lemma "tension".
 
 The paper's escape is to **move the observation in time rather than in computation**. The
 comparison of two keys must happen where they are *already* jointly observable, which at
-presentation is nowhere but at **issuance** is routine (the WUA already assures an issuer
-that a credential key is co-resident in a given WSCD). A **link credential** is a one-time
-transfer of that fact:
+presentation is nowhere but where the keys are **generated**: a WSCD that holds an
+application attest key attests every key it generates with that one key. A **link
+credential** is a one-time transfer of that fact:
 
 > A party LI that can (i) validate a WUA, (ii) obtain per-key attestation that a public
 > key is co-resident with the WUA key, and (iii) issue credentials recognised through a
@@ -228,6 +228,10 @@ transfer of that fact:
 > contents equal `{pk_1, pk_2}`; verifies both device signatures; checks all three
 > signers against trusted lists; checks revocation. — paper §"The linking issuer role"
 
+This run realises (ii) with the WSCD's **application attest key**: the per-key attestation is
+the key's certificate signed by that attest key, and two keys are co-resident exactly when the
+same attest key certifies both.
+
 This keeps all five properties: **C1** (WSCD does only ECDSA — the link check is three
 signature verifications and an equality test), **C2** (credential formats unchanged),
 **C3** (the verifier still only verifies signatures), **C4** (verifier unlinkability — the
@@ -236,12 +240,14 @@ link credential is single-use and carries no value reused across sessions), and 
 
 ### Why it defeats Attack A
 
-The load-bearing fact is **co-residency under one WUA**. A genuine holder's two
-credentials are bound to keys in the *same* WSCD, so one WUA can attest both, and the
-linking issuer binds them. Two *pooled* credentials come from two different wallet units —
-two different WSCDs, two different WUAs — and **no single WUA can prove possession of both
-device keys**, so co-residency cannot be certified, no link credential exists over the
-pair, and the verifier rejects. The relation the verifier checks ("a link credential
+The load-bearing fact is **attestation by one attest key**. Each WSCD holds an attest key
+(Android KeyMint `PURPOSE_ATTEST_KEY`) that signs nothing but the attestation certificate of
+a key generated in that same WSCD. A genuine holder's two credentials are bound to keys
+generated in the *same* WSCD, so one attest key attests both, and the linking issuer binds
+them. Two *pooled* credentials come from two wallet units — two WSCDs, two attest keys — and
+nothing a wallet can do puts a key generated elsewhere under its own attest key, so
+co-residency cannot be certified, no link credential exists over the pair, and the verifier
+rejects. The relation the verifier checks ("a link credential
 exists over exactly this pair") is decidable only when the credential is supplied, so
 colluding verifiers holding two keys from separate sessions cannot evaluate it — C4 is
 preserved (paper Prop. "escape").
@@ -263,15 +269,17 @@ privacy profile of assumption `as:li`.
 |-----------------------------------------------|------------------|
 | **Holder** with credentials `C_A`, `C_B` bound to keys `pk_1`, `pk_2` co-resident in one WSCD | A **wallet unit** holding both the PID and the university degree, each bound to a device key in that one unit. |
 | **Issuers A, B** binding `pk_1`, `pk_2` | The **reference PID issuer** and the **reference attestation (degree) issuer**. |
-| **Linking issuer LI** — validates WUAs, attests co-residency, issues `link = Sign_LI({pk_1,pk_2})` | `{li}` — verifies each unit's WUA co-residency attestation (with per-key proof of possession) and, only if all keys fall under one WUA, issues a single-use link credential. |
+| **Linking issuer LI** — validates WUAs, attests co-residency, issues `link = Sign_LI({pk_1,pk_2})` | `{li}` — verifies each key's attestation chain (key ← attest key ← batch ← attestation root) and, only if one attest key covers all keys, issues a single-use link credential. |
 | **Verifier** — steps 1–6, including the link check | **EUDI reference verifier** (steps 1, 2, 5, 6) + a verifier-side extension (steps 3–4). |
 
 > **Fidelity note.** The WSCD is emulated in software (see
-> `wscd-real-vs-emulated-sdjwt-vc.md`). The countermeasure does not depend on the
-> emulation: what makes co-residency uncertifiable for a pooled pair is the **proof of
-> possession** the linking issuer demands per key — a wallet unit can only sign a proof
-> for a key whose private half it holds, exactly as a real WSCD would gate that signature.
-> Two units therefore always produce two WUAs, on emulated or genuine hardware alike.
+> `wscd-real-vs-emulated-sdjwt-vc.md`), modelled on Android KeyMint with an application
+> attest key: an attestation root and a factory batch key shared by every unit (as a real
+> batch key is shared by ≥100,000 devices), and per WSCD an attest key whose certificates use
+> Android's KeyDescription format. The linking issuer's checks run unchanged on chains from
+> a real phone: `LinkingIssuerTest` feeds it the Samsung S24 Ultra chains recorded by
+> `attestkey-probe/` (anchored at Google's roots), where co-resident keys are linked and the
+> forgery below is refused.
 
 ---
 
@@ -281,14 +289,20 @@ privacy profile of assumption `as:li`.
 reference issuer in the ordinary way; each credential is bound to a device key in that
 unit's WSCD.
 
-**Phase 3 input — co-residency attestation.** For a presentation, each contributing unit
-signs, under its WUA, a statement that the key it will present with is co-resident in its
-WSCD, carrying a fresh **proof of possession** per key over the presentation's nonce.
+**Phase 1–2 detail — attested keys.** Every device key (and every batch copy) is generated
+in the unit's WSCD, which issues its attestation certificate under the WSCD's attest key.
 
-**Phase 3 — link issuance.** The linking issuer verifies every attestation's WUA
-signature and every proof of possession, groups the keys by WUA, and issues a single-use
-link credential over the keys **only if they all fall under one WUA**. Otherwise it
-refuses.
+**Phase 3 input — attestation chains.** For a presentation, each contributing unit forwards
+the attestation chain of the key it presents with. A wallet can forward a chain but cannot
+make one: only the attest key signs it.
+
+**Phase 3 — link issuance.** For every chain the linking issuer checks that it verifies up
+to a trusted attestation root, that the certifying key is an **attest key** (purposes exactly
+`{ATTEST_KEY}`, origin `GENERATED`), and that the key itself was `GENERATED` in the WSCD. It
+issues a single-use link credential **only if one attest key covers all keys**. Otherwise it
+refuses. The purpose check is load-bearing: an ordinary WSCD key signs whatever it is given,
+so it could put a colluder's key in a certificate; on a real device such a forgery carries a
+genuine Google chain and the attest key's own subject, and only its purpose gives it away.
 
 **Phase 4 — presentation.** The wallet posts the ordinary combined `vp_token` (which the
 reference verifier checks as always) together with the link credential.
@@ -326,7 +340,7 @@ The same combined request, now answered by **two** colluding units (PID from one
 from the other). For reference, the *unmodified* verifier alone still accepts this exact
 `vp_token` — `/present/pooled` returns `status: {ref_status}`, `pooled: {ref_pooled}`
 (that is Attack A). With the countermeasure, the linking issuer is asked to bind the two
-keys and **refuses**, because they were attested under two distinct WUAs:
+keys and **refuses**, because they were attested by two distinct attest keys:
 
 ```
 {p_timeline}
@@ -338,9 +352,9 @@ keys and **refuses**, because they were attested under two distinct WUAs:
 {p_result}
 ```
 
-`status: rejected`, `link.accepted: false` — the two device keys are attested under two
-distinct WUAs, so co-residency cannot be certified, no link credential is issued, and the
-verifier rejects. **C5 / non-poolability is restored:** the pooled response the reference
+`status: rejected`, `link.accepted: false` — the two device keys are attested by two
+distinct attest keys, so co-residency cannot be certified, no link credential is issued, and
+the verifier rejects. **C5 / non-poolability is restored:** the pooled response the reference
 verifier accepted on its own is now caught.
 
 ---
@@ -376,14 +390,17 @@ reason *"{bp_reason}"*:
 
 - **Faithful.** The reference issuer and verifier are unmodified; the link check is three
   signature verifications and an equality test (C1–C3); the co-residency decision rests on
-  a per-key proof of possession, so two WSCDs always yield two WUAs; link credentials are
-  single-use and bound to the presentation nonce (C4); pooling is rejected and genuine
-  holders accepted (C5).
+  attest-key attestation, the mechanism Android KeyMint provides, with the linking issuer's
+  checks validated on real-device chains; link credentials are single-use (C4); pooling is
+  rejected and genuine holders accepted (C5).
+- **Privacy cost.** The attest key is a stable per-WSCD value, so the linking issuer can
+  recognise a wallet across link requests. This argues for giving the role to the wallet
+  provider (Instantiation 2), which already knows the device.
 - **Simplified.** (i) The linking issuer is a dedicated authority (Instantiation 3) rather
   than the recommended Instantiation 1; a wiring change. (ii) The link credential is issued
   **on demand** at presentation over the two selected copies, rather than pre-issued
   per index at issuance (paper Phase 3); equivalent security and single-use, but the LI is
-  contacted per presentation. (iii) The link credential is a plain JWS listing the linked
+  contacted per presentation and sees the attest key each time. (iii) The link credential is a plain JWS listing the linked
   keys; the paper's k>2 SD-JWT form with selectively-disclosable per-key claims and decoy
   digests (§"Extension to k credentials") — a privacy refinement, not a security
   requirement — is not implemented.

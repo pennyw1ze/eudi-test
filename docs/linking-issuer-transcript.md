@@ -27,9 +27,9 @@ but *structurally impossible* — that is Lemma "tension".
 
 The paper's escape is to **move the observation in time rather than in computation**. The
 comparison of two keys must happen where they are *already* jointly observable, which at
-presentation is nowhere but at **issuance** is routine (the WUA already assures an issuer
-that a credential key is co-resident in a given WSCD). A **link credential** is a one-time
-transfer of that fact:
+presentation is nowhere but where the keys are **generated**: a WSCD that holds an
+application attest key attests every key it generates with that one key. A **link
+credential** is a one-time transfer of that fact:
 
 > A party LI that can (i) validate a WUA, (ii) obtain per-key attestation that a public
 > key is co-resident with the WUA key, and (iii) issue credentials recognised through a
@@ -40,6 +40,10 @@ transfer of that fact:
 > contents equal `{pk_1, pk_2}`; verifies both device signatures; checks all three
 > signers against trusted lists; checks revocation. — paper §"The linking issuer role"
 
+This run realises (ii) with the WSCD's **application attest key**: the per-key attestation is
+the key's certificate signed by that attest key, and two keys are co-resident exactly when the
+same attest key certifies both.
+
 This keeps all five properties: **C1** (WSCD does only ECDSA — the link check is three
 signature verifications and an equality test), **C2** (credential formats unchanged),
 **C3** (the verifier still only verifies signatures), **C4** (verifier unlinkability — the
@@ -48,12 +52,14 @@ link credential is single-use and carries no value reused across sessions), and 
 
 ### Why it defeats Attack A
 
-The load-bearing fact is **co-residency under one WUA**. A genuine holder's two
-credentials are bound to keys in the *same* WSCD, so one WUA can attest both, and the
-linking issuer binds them. Two *pooled* credentials come from two different wallet units —
-two different WSCDs, two different WUAs — and **no single WUA can prove possession of both
-device keys**, so co-residency cannot be certified, no link credential exists over the
-pair, and the verifier rejects. The relation the verifier checks ("a link credential
+The load-bearing fact is **attestation by one attest key**. Each WSCD holds an attest key
+(Android KeyMint `PURPOSE_ATTEST_KEY`) that signs nothing but the attestation certificate of
+a key generated in that same WSCD. A genuine holder's two credentials are bound to keys
+generated in the *same* WSCD, so one attest key attests both, and the linking issuer binds
+them. Two *pooled* credentials come from two wallet units — two WSCDs, two attest keys — and
+nothing a wallet can do puts a key generated elsewhere under its own attest key, so
+co-residency cannot be certified, no link credential exists over the pair, and the verifier
+rejects. The relation the verifier checks ("a link credential
 exists over exactly this pair") is decidable only when the credential is supplied, so
 colluding verifiers holding two keys from separate sessions cannot evaluate it — C4 is
 preserved (paper Prop. "escape").
@@ -75,15 +81,17 @@ privacy profile of assumption `as:li`.
 |-----------------------------------------------|------------------|
 | **Holder** with credentials `C_A`, `C_B` bound to keys `pk_1`, `pk_2` co-resident in one WSCD | A **wallet unit** holding both the PID and the university degree, each bound to a device key in that one unit. |
 | **Issuers A, B** binding `pk_1`, `pk_2` | The **reference PID issuer** and the **reference attestation (degree) issuer**. |
-| **Linking issuer LI** — validates WUAs, attests co-residency, issues `link = Sign_LI({pk_1,pk_2})` | `https://localhost/eudi-testbed/linking-issuer` — verifies each unit's WUA co-residency attestation (with per-key proof of possession) and, only if all keys fall under one WUA, issues a single-use link credential. |
+| **Linking issuer LI** — validates WUAs, attests co-residency, issues `link = Sign_LI({pk_1,pk_2})` | `https://localhost/eudi-testbed/linking-issuer` — verifies each key's attestation chain (key ← attest key ← batch ← attestation root) and, only if one attest key covers all keys, issues a single-use link credential. |
 | **Verifier** — steps 1–6, including the link check | **EUDI reference verifier** (steps 1, 2, 5, 6) + a verifier-side extension (steps 3–4). |
 
 > **Fidelity note.** The WSCD is emulated in software (see
-> `wscd-real-vs-emulated-sdjwt-vc.md`). The countermeasure does not depend on the
-> emulation: what makes co-residency uncertifiable for a pooled pair is the **proof of
-> possession** the linking issuer demands per key — a wallet unit can only sign a proof
-> for a key whose private half it holds, exactly as a real WSCD would gate that signature.
-> Two units therefore always produce two WUAs, on emulated or genuine hardware alike.
+> `wscd-real-vs-emulated-sdjwt-vc.md`), modelled on Android KeyMint with an application
+> attest key: an attestation root and a factory batch key shared by every unit (as a real
+> batch key is shared by ≥100,000 devices), and per WSCD an attest key whose certificates use
+> Android's KeyDescription format. The linking issuer's checks run unchanged on chains from
+> a real phone: `LinkingIssuerTest` feeds it the Samsung S24 Ultra chains recorded by
+> `attestkey-probe/` (anchored at Google's roots), where co-resident keys are linked and the
+> forgery below is refused.
 
 ---
 
@@ -93,14 +101,20 @@ privacy profile of assumption `as:li`.
 reference issuer in the ordinary way; each credential is bound to a device key in that
 unit's WSCD.
 
-**Phase 3 input — co-residency attestation.** For a presentation, each contributing unit
-signs, under its WUA, a statement that the key it will present with is co-resident in its
-WSCD, carrying a fresh **proof of possession** per key over the presentation's nonce.
+**Phase 1–2 detail — attested keys.** Every device key (and every batch copy) is generated
+in the unit's WSCD, which issues its attestation certificate under the WSCD's attest key.
 
-**Phase 3 — link issuance.** The linking issuer verifies every attestation's WUA
-signature and every proof of possession, groups the keys by WUA, and issues a single-use
-link credential over the keys **only if they all fall under one WUA**. Otherwise it
-refuses.
+**Phase 3 input — attestation chains.** For a presentation, each contributing unit forwards
+the attestation chain of the key it presents with. A wallet can forward a chain but cannot
+make one: only the attest key signs it.
+
+**Phase 3 — link issuance.** For every chain the linking issuer checks that it verifies up
+to a trusted attestation root, that the certifying key is an **attest key** (purposes exactly
+`{ATTEST_KEY}`, origin `GENERATED`), and that the key itself was `GENERATED` in the WSCD. It
+issues a single-use link credential **only if one attest key covers all keys**. Otherwise it
+refuses. The purpose check is load-bearing: an ordinary WSCD key signs whatever it is given,
+so it could put a colluder's key in a certificate; on a real device such a forgery carries a
+genuine Google chain and the attest key's own subject, and only its purpose gives it away.
 
 **Phase 4 — presentation.** The wallet posts the ordinary combined `vp_token` (which the
 reference verifier checks as always) together with the link credential.
@@ -111,85 +125,91 @@ credential covers **exactly** those keys. Accept only if it does.
 
 ---
 
-## 4. Genuine holder — accepted (flow `vp-a16f6c1b`)
+## 4. Genuine holder — accepted (flow `vp-2129b9ec`)
 
 One wallet unit holds both the PID and the degree, each bound to a key in its own WSCD.
 The two keys are co-resident, so the linking issuer binds them and the verifier accepts.
 
 ```
-[09:32:55] STEP  wallet: Starting LINKED OpenID4VP presentation to 'Reference verifier' across 1 unit(s): 'Holder (genuine, both cred…
-[09:32:55] STEP  verifier: Relying party 'Reference verifier' opens a presentation transaction
-[09:32:55] HTTP  verifier: POST https://localhost/verifier/ui/presentations -> 200 (49ms)
-[09:32:55] STEP  wallet: Wallet received an authorisation request by reference
-[09:32:55] HTTP  verifier: GET https://localhost/verifier/wallet/request.jwt/b8lWB6ZmG6UB… -> 200 (5ms)
-[09:32:55] SIGN     verifier: Authorisation request object (JAR)
+[23:22:04] STEP  wallet: Starting LINKED OpenID4VP presentation to 'Reference verifier' across 1 unit(s): 'Holder (genuine, both cred…
+[23:22:04] STEP  verifier: Relying party 'Reference verifier' opens a presentation transaction
+[23:22:04] HTTP  verifier: POST https://localhost/verifier/ui/presentations -> 200 (109ms)
+[23:22:04] STEP  wallet: Wallet received an authorisation request by reference
+[23:22:04] HTTP  verifier: GET https://localhost/verifier/wallet/request.jwt/LmS6Zx9Mod8Y… -> 200 (58ms)
+[23:22:04] SIGN     verifier: Authorisation request object (JAR)
            Verifier signs its request, so the wallet can authenticate who is asking before deciding what to disclose
            key[verifier] gdInGi1fiKvmJBELCLwKHX…
            . client id: x509_san_dns:localhost
-           . nonce (freshness): db9a2ac0-aea2-41bd-ac42-70b76da18e03
-           . response uri: https://localhost/verifier/wallet/direct_post/b8lWB6ZmG6UBrHhfdgjAo1o99_…
+           . nonce (freshness): aa624dea-2d84-4ecc-88c0-6612e3c3ca62
+           . response uri: https://localhost/verifier/wallet/direct_post/LmS6Zx9Mod8YPLMYUXWU0jViVF…
            . response mode: direct_post
            . x5c subject: CN=verifier
            . requested claims: birthdate, date_of_issuance
-[09:32:55] VERIFY   wallet: Authorisation request object (JAR)
+[23:22:04] VERIFY   wallet: Authorisation request object (JAR)
            Wallet verified the verifier's signature and accepted its identity before deciding what to disclose
            . client id: x509_san_dns:localhost
            . client id prefix: X509SanDns
-           . nonce: db9a2ac0-aea2-41bd-ac42-70b76da18e03
+           . nonce: aa624dea-2d84-4ecc-88c0-6612e3c3ca62
            ! The certificate chain is accepted wholesale: the testbed's X509SanDns trust check returns true for every chain. A real wallet would resolve the verifi…
-[09:32:55] STEP  verifier: Verifier 'x509_san_dns:localhost' asks credential 'pid' (urn:eudi:pid:1) for: [birthdate]
-[09:32:55] STEP  verifier: Verifier 'x509_san_dns:localhost' asks credential 'degree' (urn:eu.europa.ec.eudi:learning:credential:1) for…
-[09:32:55] STEP  wallet: Wallet posts a vp_token with 2 presentation(s) to the verifier
-[09:32:55] HTTP  verifier: POST https://localhost/verifier/wallet/direct_post/b8lWB6ZmG6UB… -> 200 (9ms)
-[09:32:55] DISCLOSE wallet: Selective disclosure
+[23:22:04] STEP  verifier: Verifier 'x509_san_dns:localhost' asks credential 'pid' (urn:eudi:pid:1) for: [birthdate]
+[23:22:04] STEP  verifier: Verifier 'x509_san_dns:localhost' asks credential 'degree' (urn:eu.europa.ec.eudi:learning:credential:1) for…
+[23:22:04] STEP  wallet: Wallet posts a vp_token with 2 presentation(s) to the verifier
+[23:22:04] HTTP  verifier: POST https://localhost/verifier/wallet/direct_post/LmS6Zx9Mod8Y… -> 200 (57ms)
+[23:22:04] DISCLOSE wallet: Selective disclosure
            Wallet forwards the issuer's signature untouched and releases only the 1 of 17 disclosures the verifier aske…
            . disclosed: birthdate
            . withheld: 16 digest(s)
-[09:32:55] SIGN     wallet: Key binding JWT
+[23:22:04] SIGN     wallet: Key binding JWT
            Wallet signs with the device key the credential is bound to, over this verifier and this nonce — the step th…
-           key[device] 5s-KWgkN8-FcCWzWtry20d…
+           key[device] dQrDcuYw5G3wlUO-Jd06wd…
            . audience (verifier): x509_san_dns:localhost
-           . nonce (from verifier): db9a2ac0-aea2-41bd-ac42-70b76da18e03
-           . sd_hash (binds this exact selection): 2hHYA_OL6F7Q7gmkrq5awwzinhbA9c6kum2x6Dm35sM
-           . issued at: 1790242375
+           . nonce (from verifier): aa624dea-2d84-4ecc-88c0-6612e3c3ca62
+           . sd_hash (binds this exact selection): eWkaGei7yQKZ0pY_Z3sujxlIdGTQrCflaNvtq9MHYGw
+           . issued at: 1791501724
            ! Signed by a key in JVM heap. On a certified wallet unit this signature would require user authentication against a WSCD, and the key could not leave t…
-[09:32:55] DISCLOSE wallet: Selective disclosure
+[23:22:04] DISCLOSE wallet: Selective disclosure
            Wallet forwards the issuer's signature untouched and releases only the 0 of 10 disclosures the verifier aske…
            . disclosed: none
            . withheld: 10 digest(s)
-[09:32:55] SIGN     wallet: Key binding JWT
+[23:22:04] SIGN     wallet: Key binding JWT
            Wallet signs with the device key the credential is bound to, over this verifier and this nonce — the step th…
-           key[device] 5s-KWgkN8-FcCWzWtry20d…
+           key[device] dQrDcuYw5G3wlUO-Jd06wd…
            . audience (verifier): x509_san_dns:localhost
-           . nonce (from verifier): db9a2ac0-aea2-41bd-ac42-70b76da18e03
-           . sd_hash (binds this exact selection): JqHtHV2Iex2qofmm7ZrqtReT-3-XecXm3RpMpBvHuDI
-           . issued at: 1790242375
+           . nonce (from verifier): aa624dea-2d84-4ecc-88c0-6612e3c3ca62
+           . sd_hash (binds this exact selection): 5_ccSCgWyyuDb5m1a6F_HJBXkdchbDCRxapYVQPqB3o
+           . issued at: 1791501724
            ! Signed by a key in JVM heap. On a certified wallet unit this signature would require user authentication against a WSCD, and the key could not leave t…
-[09:32:55] STEP  verifier: Verifier responded: Accepted(redirectURI=null)
-[09:32:55] VERIFY   verifier: Verifiable presentation
+[23:22:04] STEP  verifier: Verifier responded: Accepted(redirectURI=null)
+[23:22:04] VERIFY   verifier: Verifiable presentation
            Verifier accepted the presentation: the issuer's signature, the digests of the disclosed claims and the key …
-[09:32:55] SIGN     wallet: WUA co-residency attestation
-           Wallet unit 'Holder (genuine, both creds)' asserts, under its WUA, that the key(s) it presented are co-resid…
-           key[device] 5s-KWgkN8-FcCWzWtry20d…
-           key[device] 5s-KWgkN8-FcCWzWtry20d…
-           . keys: 5s-KWgkN8-FcCWzWtry20d8Z1vbF8KFGPOw9CcWnvH4, 5s-KWgkN8-FcCWzWtry20d8Z1vb…
-           . challenge: db9a2ac0-aea2-41bd-ac42-70b76da18e03
-           ! The proof of possession is load-bearing: a unit can only vouch for a key whose private half it holds, so it cannot claim another unit's key as co-resi…
-[09:32:55] SIGN     linking-issuer: Link credential
-           Linking issuer certified that the 1 presented keys are co-resident in one WSCD and issued a single-use link …
-           key[device] 5s-KWgkN8-FcCWzWtry20d…
-           . linked keys: 5s-KWgkN8-FcCWzWtry20d8Z1vbF8KFGPOw9CcWnvH4
+[23:22:04] VERIFY   wallet: Key attestation chain
+           Wallet unit 'Holder (genuine, both creds)' forwards the attestation chain its WSCD issued for the key it pre…
+           key[device] dQrDcuYw5G3wlUO-Jd06wd…
+           . key: dQrDcuYw5G3wlUO-Jd06wdBbAaGSpE8jsSlhE5PxOI0
+           . chain length: 4
+           . issued by: CN=Android Keystore Key
+[23:22:04] VERIFY   wallet: Key attestation chain
+           Wallet unit 'Holder (genuine, both creds)' forwards the attestation chain its WSCD issued for the key it pre…
+           key[device] dQrDcuYw5G3wlUO-Jd06wd…
+           . key: dQrDcuYw5G3wlUO-Jd06wdBbAaGSpE8jsSlhE5PxOI0
+           . chain length: 4
+           . issued by: CN=Android Keystore Key
+[23:22:04] SIGN     linking-issuer: Link credential
+           Linking issuer verified that the 1 presented keys were generated in one WSCD — all attested by the same atte…
+           key[device] dQrDcuYw5G3wlUO-Jd06wd…
+           . linked keys: dQrDcuYw5G3wlUO-Jd06wdBbAaGSpE8jsSlhE5PxOI0
+           . attest key: 92qEvZ44yQm85KmFnbyVjxBFea6BYSJAeATsrujVAdU
            . linking issuer: https://localhost/eudi-testbed/linking-issuer
-           . jti (single-use): 0b264cc1-b9b1-4981-95e9-493b2a9ca1e8
-           ! Carries the two device-key values in clear, so it is a stronger correlator than either credential; it is single-use (fresh jti, bound to this presenta…
-[09:32:55] VERIFY   verifier: Link credential
+           . jti (single-use): ee15f7d3-7278-4be1-85cb-790cac5d9d8b
+           ! Carries the device-key values in clear, so it is a stronger correlator than either credential; it is single-use (fresh jti), so it cannot be reused ac…
+[23:22:04] VERIFY   verifier: Link credential
            Verifier accepted the pooling check: a trusted linking issuer certified that the 1 presented credentials' ke…
-           key[device] 5s-KWgkN8-FcCWzWtry20d…
-           key[device] 5s-KWgkN8-FcCWzWtry20d…
+           key[device] dQrDcuYw5G3wlUO-Jd06wd…
+           key[device] dQrDcuYw5G3wlUO-Jd06wd…
            . linking issuer: https://localhost/eudi-testbed/linking-issuer
-           . linked keys: 5s-KWgkN8-FcCWzWtry20d8Z1vbF8KFGPOw9CcWnvH4
-[09:32:55] STEP  verifier: Relying party reads the wallet response
-[09:32:55] HTTP  verifier: GET https://localhost/verifier/ui/presentations/3BA6qa6Bn0_c8B… -> 200 (3ms)
+           . linked keys: dQrDcuYw5G3wlUO-Jd06wdBbAaGSpE8jsSlhE5PxOI0
+[23:22:04] STEP  verifier: Relying party reads the wallet response
+[23:22:04] HTTP  verifier: GET https://localhost/verifier/ui/presentations/lNLeA3lZVg_23N… -> 200 (7ms)
 ```
 
 ### Result
@@ -203,10 +223,10 @@ The two keys are co-resident, so the linking issuer binds them and the verifier 
     "accepted": true,
     "reason": null,
     "linkedKeyThumbprints": [
-      "5s-KWgkN8-FcCWzWtry20d8Z1vbF8KFGPOw9CcWnvH4"
+      "dQrDcuYw5G3wlUO-Jd06wdBbAaGSpE8jsSlhE5PxOI0"
     ],
     "presentedKeyThumbprints": [
-      "5s-KWgkN8-FcCWzWtry20d8Z1vbF8KFGPOw9CcWnvH4"
+      "dQrDcuYw5G3wlUO-Jd06wdBbAaGSpE8jsSlhE5PxOI0"
     ],
     "linkingIssuer": "https://localhost/eudi-testbed/linking-issuer"
   },
@@ -214,12 +234,12 @@ The two keys are co-resident, so the linking issuer binds them and the verifier 
     {
       "queryId": "pid",
       "walletUnitLabel": "Holder (genuine, both creds)",
-      "deviceKeyThumbprint": "5s-KWgkN8-FcCWzWtry20d8Z1vbF8KFGPOw9CcWnvH4"
+      "deviceKeyThumbprint": "dQrDcuYw5G3wlUO-Jd06wdBbAaGSpE8jsSlhE5PxOI0"
     },
     {
       "queryId": "degree",
       "walletUnitLabel": "Holder (genuine, both creds)",
-      "deviceKeyThumbprint": "5s-KWgkN8-FcCWzWtry20d8Z1vbF8KFGPOw9CcWnvH4"
+      "deviceKeyThumbprint": "dQrDcuYw5G3wlUO-Jd06wdBbAaGSpE8jsSlhE5PxOI0"
     }
   ]
 }
@@ -231,108 +251,108 @@ passed. A genuine holder is unaffected by the defence.
 
 ---
 
-## 5. Pooled presentation (Attack A) — rejected (flow `vp-8ce64d18`)
+## 5. Pooled presentation (Attack A) — rejected (flow `vp-210b0819`)
 
 The same combined request, now answered by **two** colluding units (PID from one, degree
 from the other). For reference, the *unmodified* verifier alone still accepts this exact
 `vp_token` — `/present/pooled` returns `status: presented`, `pooled: True`
 (that is Attack A). With the countermeasure, the linking issuer is asked to bind the two
-keys and **refuses**, because they were attested under two distinct WUAs:
+keys and **refuses**, because they were attested by two distinct attest keys:
 
 ```
-[09:32:55] STEP  wallet: Starting LINKED OpenID4VP presentation to 'Reference verifier' across 2 unit(s): 'Colluder A (PID)', 'Collud…
-[09:32:55] STEP  verifier: Relying party 'Reference verifier' opens a presentation transaction
-[09:32:55] HTTP  verifier: POST https://localhost/verifier/ui/presentations -> 200 (46ms)
-[09:32:55] STEP  wallet: Wallet received an authorisation request by reference
-[09:32:55] HTTP  verifier: GET https://localhost/verifier/wallet/request.jwt/5d96FB9mLv1L… -> 200 (5ms)
-[09:32:55] SIGN     verifier: Authorisation request object (JAR)
+[23:22:04] STEP  wallet: Starting LINKED OpenID4VP presentation to 'Reference verifier' across 2 unit(s): 'Colluder A (PID)', 'Collud…
+[23:22:04] STEP  verifier: Relying party 'Reference verifier' opens a presentation transaction
+[23:22:04] HTTP  verifier: POST https://localhost/verifier/ui/presentations -> 200 (48ms)
+[23:22:04] STEP  wallet: Wallet received an authorisation request by reference
+[23:22:04] HTTP  verifier: GET https://localhost/verifier/wallet/request.jwt/3rYKxeQTKMMv… -> 200 (7ms)
+[23:22:04] SIGN     verifier: Authorisation request object (JAR)
            Verifier signs its request, so the wallet can authenticate who is asking before deciding what to disclose
            key[verifier] gdInGi1fiKvmJBELCLwKHX…
            . client id: x509_san_dns:localhost
-           . nonce (freshness): 60e16a61-bdd6-4bb5-9af1-35ce33eb9ccc
-           . response uri: https://localhost/verifier/wallet/direct_post/5d96FB9mLv1LcIqI7VSJyOvWKK…
+           . nonce (freshness): e5d73e53-7164-4e3a-bdeb-7dca91219ed1
+           . response uri: https://localhost/verifier/wallet/direct_post/3rYKxeQTKMMvD3nPrRYmzCkRso…
            . response mode: direct_post
            . x5c subject: CN=verifier
            . requested claims: birthdate, date_of_issuance
-[09:32:55] VERIFY   wallet: Authorisation request object (JAR)
+[23:22:04] VERIFY   wallet: Authorisation request object (JAR)
            Wallet verified the verifier's signature and accepted its identity before deciding what to disclose
            . client id: x509_san_dns:localhost
            . client id prefix: X509SanDns
-           . nonce: 60e16a61-bdd6-4bb5-9af1-35ce33eb9ccc
+           . nonce: e5d73e53-7164-4e3a-bdeb-7dca91219ed1
            ! The certificate chain is accepted wholesale: the testbed's X509SanDns trust check returns true for every chain. A real wallet would resolve the verifi…
-[09:32:55] STEP  verifier: Verifier 'x509_san_dns:localhost' asks credential 'pid' (urn:eudi:pid:1) for: [birthdate]
-[09:32:55] STEP  wallet: Pooled: unit 'Colluder A (PID)' answers query 'pid' with its own credential and signs the key binding with i…
-[09:32:55] SIGN     wallet: Key binding JWT for query 'pid'
+[23:22:04] STEP  verifier: Verifier 'x509_san_dns:localhost' asks credential 'pid' (urn:eudi:pid:1) for: [birthdate]
+[23:22:04] STEP  wallet: Pooled: unit 'Colluder A (PID)' answers query 'pid' with its own credential and signs the key binding with i…
+[23:22:04] SIGN     wallet: Key binding JWT for query 'pid'
            Wallet unit 'Colluder A (PID)' signed the key binding for its own credential, over the verifier's shared non…
-           key[device] Er2GCxBmBskM74AJ3jgVIS…
-           . credential: 9269f6a3-0948-405f-9f3c-ed72eceb9e98
-           . nonce: 60e16a61-bdd6-4bb5-9af1-35ce33eb9ccc
+           key[device] iQ2KFCiIT0EJukG2MJwKPf…
+           . credential: 0be11eee-a318-44da-9a78-d477ee9368f7
+           . nonce: e5d73e53-7164-4e3a-bdeb-7dca91219ed1
            . audience: x509_san_dns:localhost
            ! This key binding is signed by a device key held by a different wallet unit than the one signing the other credential in the same vp_token. The verifie…
-[09:32:55] STEP  verifier: Verifier 'x509_san_dns:localhost' asks credential 'degree' (urn:eu.europa.ec.eudi:learning:credential:1) for…
-[09:32:55] STEP  wallet: Pooled: unit 'Colluder B (degree)' answers query 'degree' with its own credential and signs the key binding …
-[09:32:55] SIGN     wallet: Key binding JWT for query 'degree'
+[23:22:04] STEP  verifier: Verifier 'x509_san_dns:localhost' asks credential 'degree' (urn:eu.europa.ec.eudi:learning:credential:1) for…
+[23:22:04] STEP  wallet: Pooled: unit 'Colluder B (degree)' answers query 'degree' with its own credential and signs the key binding …
+[23:22:04] SIGN     wallet: Key binding JWT for query 'degree'
            Wallet unit 'Colluder B (degree)' signed the key binding for its own credential, over the verifier's shared …
-           key[device] Z-3DC0xDCDPPl7qGeQBYQ9…
-           . credential: 4ddff0db-b800-4991-a345-e7f8e2cc39eb
-           . nonce: 60e16a61-bdd6-4bb5-9af1-35ce33eb9ccc
+           key[device] _mAgrTXnL5TIBrUig8EMlp…
+           . credential: 66aa6a00-c230-465f-8817-c60311c8b8a2
+           . nonce: e5d73e53-7164-4e3a-bdeb-7dca91219ed1
            . audience: x509_san_dns:localhost
            ! This key binding is signed by a device key held by a different wallet unit than the one signing the other credential in the same vp_token. The verifie…
-[09:32:55] STEP  wallet: Wallet posts a vp_token with 2 presentation(s) to the verifier (pooled across 2 units)
-[09:32:55] HTTP  verifier: POST https://localhost/verifier/wallet/direct_post/5d96FB9mLv1L… -> 200 (8ms)
-[09:32:55] DISCLOSE wallet: Selective disclosure
+[23:22:04] STEP  wallet: Wallet posts a vp_token with 2 presentation(s) to the verifier (pooled across 2 units)
+[23:22:04] HTTP  verifier: POST https://localhost/verifier/wallet/direct_post/3rYKxeQTKMMv… -> 200 (11ms)
+[23:22:04] DISCLOSE wallet: Selective disclosure
            Wallet forwards the issuer's signature untouched and releases only the 1 of 17 disclosures the verifier aske…
            . disclosed: birthdate
            . withheld: 16 digest(s)
-[09:32:55] SIGN     wallet: Key binding JWT
+[23:22:04] SIGN     wallet: Key binding JWT
            Wallet signs with the device key the credential is bound to, over this verifier and this nonce — the step th…
-           key[device] Er2GCxBmBskM74AJ3jgVIS…
+           key[device] iQ2KFCiIT0EJukG2MJwKPf…
            . audience (verifier): x509_san_dns:localhost
-           . nonce (from verifier): 60e16a61-bdd6-4bb5-9af1-35ce33eb9ccc
-           . sd_hash (binds this exact selection): 4sFHjXDcwZuxSaegsSzgUZzg10Mp8JzMx-b88ROSL3k
-           . issued at: 1790242375
+           . nonce (from verifier): e5d73e53-7164-4e3a-bdeb-7dca91219ed1
+           . sd_hash (binds this exact selection): pRJqgAstJar0hImq42GkaeXansC7t17WmdOACGG4RhQ
+           . issued at: 1791501724
            ! Signed by a key in JVM heap. On a certified wallet unit this signature would require user authentication against a WSCD, and the key could not leave t…
-[09:32:55] DISCLOSE wallet: Selective disclosure
+[23:22:04] DISCLOSE wallet: Selective disclosure
            Wallet forwards the issuer's signature untouched and releases only the 0 of 10 disclosures the verifier aske…
            . disclosed: none
            . withheld: 10 digest(s)
-[09:32:55] SIGN     wallet: Key binding JWT
+[23:22:04] SIGN     wallet: Key binding JWT
            Wallet signs with the device key the credential is bound to, over this verifier and this nonce — the step th…
-           key[device] Z-3DC0xDCDPPl7qGeQBYQ9…
+           key[device] _mAgrTXnL5TIBrUig8EMlp…
            . audience (verifier): x509_san_dns:localhost
-           . nonce (from verifier): 60e16a61-bdd6-4bb5-9af1-35ce33eb9ccc
-           . sd_hash (binds this exact selection): wQJQET6xRsbCJ7TATZ6w1GB2RLTFiSdzBGXf2CqjrnE
-           . issued at: 1790242375
+           . nonce (from verifier): e5d73e53-7164-4e3a-bdeb-7dca91219ed1
+           . sd_hash (binds this exact selection): 3f3c5LgNXRkn8fMnholaRzZ4i0uxciIrC6Qk5XVB-SE
+           . issued at: 1791501724
            ! Signed by a key in JVM heap. On a certified wallet unit this signature would require user authentication against a WSCD, and the key could not leave t…
-[09:32:55] STEP  verifier: Verifier responded: Accepted(redirectURI=null)
-[09:32:55] VERIFY   verifier: Verifiable presentation
+[23:22:04] STEP  verifier: Verifier responded: Accepted(redirectURI=null)
+[23:22:04] VERIFY   verifier: Verifiable presentation
            Verifier accepted the presentation: the issuer's signature, the digests of the disclosed claims and the key …
-[09:32:55] SIGN     wallet: WUA co-residency attestation
-           Wallet unit 'Colluder A (PID)' asserts, under its WUA, that the key(s) it presented are co-resident in its W…
-           key[device] Er2GCxBmBskM74AJ3jgVIS…
-           . keys: Er2GCxBmBskM74AJ3jgVISwj116nVATjdST7NLnoeig
-           . challenge: 60e16a61-bdd6-4bb5-9af1-35ce33eb9ccc
-           ! The proof of possession is load-bearing: a unit can only vouch for a key whose private half it holds, so it cannot claim another unit's key as co-resi…
-[09:32:55] SIGN     wallet: WUA co-residency attestation
-           Wallet unit 'Colluder B (degree)' asserts, under its WUA, that the key(s) it presented are co-resident in it…
-           key[device] Z-3DC0xDCDPPl7qGeQBYQ9…
-           . keys: Z-3DC0xDCDPPl7qGeQBYQ9YoVF26RZD6HzR-SUWJyb8
-           . challenge: 60e16a61-bdd6-4bb5-9af1-35ce33eb9ccc
-           ! The proof of possession is load-bearing: a unit can only vouch for a key whose private half it holds, so it cannot claim another unit's key as co-resi…
-[09:32:55] VERIFY   linking-issuer: Co-residency attestations
-           Linking issuer refused to issue a link credential: the presented keys were attested under 2 distinct WUAs, s…
-           key[device] Er2GCxBmBskM74AJ3jgVIS…
-           key[device] Z-3DC0xDCDPPl7qGeQBYQ9…
-           . distinct WUAs: 2
-           . keys: Er2GCxBmBskM74AJ3jgVISwj116nVATjdST7NLnoeig, Z-3DC0xDCDPPl7qGeQBYQ9YoVF2…
-           ! This is the countermeasure doing its job: two credentials pooled from two wallet units carry two WUAs, and no single WUA can prove possession of both …
-[09:32:55] VERIFY   verifier: Link credential
+[23:22:04] VERIFY   wallet: Key attestation chain
+           Wallet unit 'Colluder A (PID)' forwards the attestation chain its WSCD issued for the key it presented with:…
+           key[device] iQ2KFCiIT0EJukG2MJwKPf…
+           . key: iQ2KFCiIT0EJukG2MJwKPf7h4Ido3sxb4LY_FOR6ihI
+           . chain length: 4
+           . issued by: CN=Android Keystore Key
+[23:22:04] VERIFY   wallet: Key attestation chain
+           Wallet unit 'Colluder B (degree)' forwards the attestation chain its WSCD issued for the key it presented wi…
+           key[device] _mAgrTXnL5TIBrUig8EMlp…
+           . key: _mAgrTXnL5TIBrUig8EMlpNr_w9J8FU_tQP3L81FFf0
+           . chain length: 4
+           . issued by: CN=Android Keystore Key
+[23:22:04] VERIFY   linking-issuer: Key attestation chains
+           Linking issuer refused to issue a link credential: the presented keys were attested by 2 distinct attest key…
+           key[device] iQ2KFCiIT0EJukG2MJwKPf…
+           key[device] _mAgrTXnL5TIBrUig8EMlp…
+           . distinct attest keys: 2
+           . keys: iQ2KFCiIT0EJukG2MJwKPf7h4Ido3sxb4LY_FOR6ihI, _mAgrTXnL5TIBrUig8EMlpNr_w9…
+           ! This is the countermeasure doing its job: credentials pooled from two wallet units are bound to keys generated in two WSCDs, and an attest key attests…
+[23:22:04] VERIFY   verifier: Link credential
            Verifier rejected the presentation on the pooling check: no link credential over the presented keys (linking…
            . reason: no link credential over the presented keys (linking issuer: keys atteste…
-           . presented keys: Er2GCxBmBskM74AJ3jgVISwj116nVATjdST7NLnoeig, Z-3DC0xDCDPPl7qGeQBYQ9YoVF2…
+           . presented keys: _mAgrTXnL5TIBrUig8EMlpNr_w9J8FU_tQP3L81FFf0, iQ2KFCiIT0EJukG2MJwKPf7h4Id…
            ! Step 3/4 of the countermeasure. Without a link credential over exactly the presented keys, the verifier cannot conclude the credentials belong to one …
-[09:32:55] STEP  verifier: Relying party reads the wallet response
-[09:32:55] HTTP  verifier: GET https://localhost/verifier/ui/presentations/bPPL9DrR-TIj5T… -> 200 (3ms)
+[23:22:04] STEP  verifier: Relying party reads the wallet response
+[23:22:04] HTTP  verifier: GET https://localhost/verifier/ui/presentations/r_0zSP3v_2CVIk… -> 200 (4ms)
 ```
 
 ### Result
@@ -344,11 +364,11 @@ keys and **refuses**, because they were attested under two distinct WUAs:
     "requested": true,
     "issued": false,
     "accepted": false,
-    "reason": "no link credential over the presented keys (linking issuer: keys attested under 2 distinct WUAs — not co-resident)",
+    "reason": "no link credential over the presented keys (linking issuer: keys attested by 2 distinct attest keys — not co-resident)",
     "linkedKeyThumbprints": [],
     "presentedKeyThumbprints": [
-      "Er2GCxBmBskM74AJ3jgVISwj116nVATjdST7NLnoeig",
-      "Z-3DC0xDCDPPl7qGeQBYQ9YoVF26RZD6HzR-SUWJyb8"
+      "_mAgrTXnL5TIBrUig8EMlpNr_w9J8FU_tQP3L81FFf0",
+      "iQ2KFCiIT0EJukG2MJwKPf7h4Ido3sxb4LY_FOR6ihI"
     ],
     "linkingIssuer": null
   },
@@ -356,20 +376,20 @@ keys and **refuses**, because they were attested under two distinct WUAs:
     {
       "queryId": "pid",
       "walletUnitLabel": "Colluder A (PID)",
-      "deviceKeyThumbprint": "Er2GCxBmBskM74AJ3jgVISwj116nVATjdST7NLnoeig"
+      "deviceKeyThumbprint": "iQ2KFCiIT0EJukG2MJwKPf7h4Ido3sxb4LY_FOR6ihI"
     },
     {
       "queryId": "degree",
       "walletUnitLabel": "Colluder B (degree)",
-      "deviceKeyThumbprint": "Z-3DC0xDCDPPl7qGeQBYQ9YoVF26RZD6HzR-SUWJyb8"
+      "deviceKeyThumbprint": "_mAgrTXnL5TIBrUig8EMlpNr_w9J8FU_tQP3L81FFf0"
     }
   ]
 }
 ```
 
-`status: rejected`, `link.accepted: false` — the two device keys are attested under two
-distinct WUAs, so co-residency cannot be certified, no link credential is issued, and the
-verifier rejects. **C5 / non-poolability is restored:** the pooled response the reference
+`status: rejected`, `link.accepted: false` — the two device keys are attested by two
+distinct attest keys, so co-residency cannot be certified, no link credential is issued, and
+the verifier rejects. **C5 / non-poolability is restored:** the pooled response the reference
 verifier accepted on its own is now caught.
 
 ---
@@ -383,8 +403,8 @@ twice from one genuine holder:
 
 | presentation | status | linked keys (first 10 chars) |
 |--------------|--------|------------------------------|
-| run 1        | `presented` | `GNBydQa7ke, QIGLnjOa_Q` |
-| run 2        | `presented` | `JzNjmFk0-j, MzrytH-oBF` |
+| run 1        | `presented` | `7QprliLsvf, TtzqIVgLBH` |
+| run 2        | `presented` | `a8XUBPm867, rIu8OdKTEo` |
 
 Both are accepted, each links **two distinct keys** (not one shared device key), and the
 two runs use **different key pairs** — the single-use rotation that gives verifier
@@ -393,7 +413,7 @@ C5 holds even though the credentials share no value: exactly the tension the pap
 resolves by moving the observation to issuance time. Fresh key pair each run: `True`.
 
 A **pooled batch** (two batch-issued units) is still rejected — `status: rejected`,
-reason *"no link credential over the presented keys (linking issuer: keys attested under 2 distinct WUAs — not co-resident)"*:
+reason *"no link credential over the presented keys (linking issuer: keys attested by 2 distinct attest keys — not co-resident)"*:
 
 ```json
 {
@@ -402,11 +422,11 @@ reason *"no link credential over the presented keys (linking issuer: keys attest
     "requested": true,
     "issued": false,
     "accepted": false,
-    "reason": "no link credential over the presented keys (linking issuer: keys attested under 2 distinct WUAs — not co-resident)",
+    "reason": "no link credential over the presented keys (linking issuer: keys attested by 2 distinct attest keys — not co-resident)",
     "linkedKeyThumbprints": [],
     "presentedKeyThumbprints": [
-      "CqKkncp_tUQkKmirS2bfjRZ-Q4jnwxo6Qhuh67ZATts",
-      "NEvI5lIE5OFe_LBksZwDpRPuwJGSploIe1mkaTOYiiE"
+      "6haicBLtJheACFbegoV26wd_PknX0p6yFQveFQyvo2g",
+      "EHrP7ptQOB-MwNNhBwJBp3MDU3uIx8is5tJTodTWucA"
     ],
     "linkingIssuer": null
   },
@@ -414,12 +434,12 @@ reason *"no link credential over the presented keys (linking issuer: keys attest
     {
       "queryId": "pid",
       "walletUnitLabel": "Batch colluder A (PID x3)",
-      "deviceKeyThumbprint": "CqKkncp_tUQkKmirS2bfjRZ-Q4jnwxo6Qhuh67ZATts"
+      "deviceKeyThumbprint": "EHrP7ptQOB-MwNNhBwJBp3MDU3uIx8is5tJTodTWucA"
     },
     {
       "queryId": "degree",
       "walletUnitLabel": "Batch colluder B (degree x3)",
-      "deviceKeyThumbprint": "NEvI5lIE5OFe_LBksZwDpRPuwJGSploIe1mkaTOYiiE"
+      "deviceKeyThumbprint": "6haicBLtJheACFbegoV26wd_PknX0p6yFQveFQyvo2g"
     }
   ]
 }
@@ -431,14 +451,17 @@ reason *"no link credential over the presented keys (linking issuer: keys attest
 
 - **Faithful.** The reference issuer and verifier are unmodified; the link check is three
   signature verifications and an equality test (C1–C3); the co-residency decision rests on
-  a per-key proof of possession, so two WSCDs always yield two WUAs; link credentials are
-  single-use and bound to the presentation nonce (C4); pooling is rejected and genuine
-  holders accepted (C5).
+  attest-key attestation, the mechanism Android KeyMint provides, with the linking issuer's
+  checks validated on real-device chains; link credentials are single-use (C4); pooling is
+  rejected and genuine holders accepted (C5).
+- **Privacy cost.** The attest key is a stable per-WSCD value, so the linking issuer can
+  recognise a wallet across link requests. This argues for giving the role to the wallet
+  provider (Instantiation 2), which already knows the device.
 - **Simplified.** (i) The linking issuer is a dedicated authority (Instantiation 3) rather
   than the recommended Instantiation 1; a wiring change. (ii) The link credential is issued
   **on demand** at presentation over the two selected copies, rather than pre-issued
   per index at issuance (paper Phase 3); equivalent security and single-use, but the LI is
-  contacted per presentation. (iii) The link credential is a plain JWS listing the linked
+  contacted per presentation and sees the attest key each time. (iii) The link credential is a plain JWS listing the linked
   keys; the paper's k>2 SD-JWT form with selectively-disclosable per-key claims and decoy
   digests (§"Extension to k credentials") — a privacy refinement, not a security
   requirement — is not implemented.
