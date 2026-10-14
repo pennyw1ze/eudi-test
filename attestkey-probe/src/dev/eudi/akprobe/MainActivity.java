@@ -1,14 +1,16 @@
 package dev.eudi.akprobe;
 
 import android.app.Activity;
+import android.content.Context;
 import android.os.Bundle;
 import android.util.Log;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
- * Runs a probe off the UI thread and shows its summary: the {@link Probe} by default, or one
- * side of the {@link ForeignKeyProbe} when started with {@code --es mode bob|alice}.
+ * Runs a probe off the UI thread and shows its summary: the {@link Probe} by default, one side
+ * of the {@link ForeignKeyProbe} when started with {@code --es mode bob|alice}, or a stage of the
+ * {@link LateAttestProbe} with {@code --es mode late-setup|late-attest}.
  */
 public class MainActivity extends Activity {
     static final String TAG = "AKPROBE";
@@ -31,13 +33,7 @@ public class MainActivity extends Activity {
             public void run() {
                 String text;
                 try {
-                    if ("bob".equals(mode)) {
-                        text = new ForeignKeyProbe(getApplicationContext()).runBob();
-                    } else if ("alice".equals(mode)) {
-                        text = new ForeignKeyProbe(getApplicationContext()).runAlice();
-                    } else {
-                        text = new Probe(getApplicationContext()).run();
-                    }
+                    text = MainActivity.run(getApplicationContext(), mode);
                 } catch (Throwable t) {
                     text = "FATAL\n" + Log.getStackTraceString(t);
                     Log.e(TAG, text);
@@ -51,5 +47,14 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    /** The probe selected by {@code mode}; shared with {@link ProbeInstrumentation}. */
+    static String run(Context ctx, String mode) throws Exception {
+        if ("bob".equals(mode)) return new ForeignKeyProbe(ctx).runBob();
+        if ("alice".equals(mode)) return new ForeignKeyProbe(ctx).runAlice();
+        if ("late-setup".equals(mode)) return new LateAttestProbe(ctx).runSetup();
+        if ("late-attest".equals(mode)) return new LateAttestProbe(ctx).runAttest();
+        return new Probe(ctx).run();
     }
 }

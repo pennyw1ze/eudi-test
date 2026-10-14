@@ -19,7 +19,11 @@ private val crypto = CryptoSink(session)
 private val scanner = CryptoScanner(crypto)
 private val registry = Registry(crypto)
 private val verifierDriver = VerifierDriver(sink)
-private val linkingIssuer = LinkingIssuer(crypto, trustedRoots = listOf(AttestationAuthority.platform.root))
+private val linkingIssuer = LinkingIssuer(
+    crypto,
+    trustedRoots = listOf(AttestationAuthority.platform.root),
+    policy = AttestationPolicy(trustedApps = setOf(AttestationAuthority.TESTBED_WALLET_APP)),
+)
 private val linkingVerifier = LinkingVerifier(listOf(linkingIssuer.trustedJwk()), crypto)
 private val issuanceService = IssuanceService(sink, scanner, registry)
 private val presentationService =

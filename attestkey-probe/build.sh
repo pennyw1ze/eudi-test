@@ -15,7 +15,7 @@ rm -rf "$OUT"
 mkdir -p "$OUT/classes" "$OUT/dex"
 
 "$BT/aapt2" link -o "$OUT/unsigned.apk" --manifest AndroidManifest.xml -I "$JAR" \
-    --rename-manifest-package "$PACKAGE"
+    --rename-manifest-package "$PACKAGE" --rename-instrumentation-target-package "$PACKAGE"
 javac -source 8 -target 8 -bootclasspath "$JAR" -Xlint:-options -d "$OUT/classes" $(find src -name '*.java')
 "$BT/d8" --min-api 31 --lib "$JAR" --output "$OUT/dex" $(find "$OUT/classes" -name '*.class')
 

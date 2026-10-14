@@ -26,7 +26,8 @@ import kotlin.test.assertTrue
 class LinkingIssuerTest {
     private val crypto = CryptoSink(SessionLog(Files.createTempDirectory("linking-issuer-test")))
     private val platform = AttestationAuthority()
-    private val linkingIssuer = LinkingIssuer(crypto, trustedRoots = listOf(platform.root))
+    private val walletOnly = AttestationPolicy(trustedApps = setOf(AttestationAuthority.TESTBED_WALLET_APP))
+    private val linkingIssuer = LinkingIssuer(crypto, trustedRoots = listOf(platform.root), policy = walletOnly)
     private val verifier = LinkingVerifier(listOf(linkingIssuer.trustedJwk()), crypto)
 
     private val alice = WalletKeys("alice", attestation = platform)
@@ -76,6 +77,125 @@ class LinkingIssuerTest {
     }
 
     @Test
+    fun `forgery - an ordinary WSCD key cannot vouch for a fake attest key`() {
+        // Alice extends her genuine chain: her ordinary device key certifies a software key as
+        // an "attest key" (purposes {ATTEST_KEY}, origin GENERATED), and that key certifies both
+        // her key and Bob's. Every signature verifies and the fake attest key looks genuine;
+        // only the position of the first KeyDescription in the chain gives it away.
+        val aliceChain = chainOf(alice, alice.deviceKey)
+        val fakeAttestKey = WalletKeys.generateKey("fake-attest-key")
+        val fakeAttestKeyCert = issueCertificate(
+            subject = X500Name("CN=Android Keystore Key"),
+            publicKey = fakeAttestKey.toPublicKey(),
+            issuer = X500Name.getInstance(aliceChain.first().subjectX500Principal.encoded),
+            signingKey = alice.deviceKey,
+            validUntil = Instant.now().plusSeconds(3600),
+            description = KeyDescription.of(aliceChain[1]),
+        )
+        fun underFake(key: com.nimbusds.jose.jwk.ECKey, genuineLeaf: X509Certificate) = listOf(
+            issueCertificate(
+                subject = X500Name("CN=Android Keystore Key"),
+                publicKey = key.toPublicKey(),
+                issuer = X500Name.getInstance(fakeAttestKeyCert.subjectX500Principal.encoded),
+                signingKey = fakeAttestKey,
+                validUntil = Instant.now().plusSeconds(3600),
+                description = KeyDescription.of(genuineLeaf),
+            ),
+            fakeAttestKeyCert,
+        ) + aliceChain
+
+        val link = linkingIssuer.issueLink(
+            listOf(
+                underFake(alice.deviceKey, aliceChain.first()),
+                underFake(bob.deviceKey, chainOf(bob, bob.deviceKey).first()),
+            ),
+            "fake-attest-key",
+        )
+        assertFalse(link.issued, "a chain extended by an ordinary key was accepted")
+        assertTrue(link.reason!!.contains("closest to the root"), link.reason)
+    }
+
+    @Test
+    fun `import - a key made outside the WSCD is attested by the same attest key but refused`() {
+        // KeyMint's importKey accepts an attestation key: the imported key's certificate is signed
+        // by the WSCD's own attest key, exactly like a generated one. Only the origin differs.
+        val wscd = platform.newWscd("alice-wscd")
+        val generated = wscd.generateKey("generated")
+        for (wrapped in listOf(false, true)) {
+            val madeOutside = wscd.importKey(WalletKeys.generateKey("made-outside"), securelyWrapped = wrapped)
+            val chains = listOf(requireNotNull(wscd.attestationChain(generated)), requireNotNull(wscd.attestationChain(madeOutside)))
+            assertEquals(chains[0][1], chains[1][1], "both keys are certified by the same attest key")
+
+            val link = linkingIssuer.issueLink(chains, "import-$wrapped")
+            assertFalse(link.issued, "an imported key was linked")
+            val origin = if (wrapped) "SECURELY_IMPORTED" else "IMPORTED"
+            assertTrue(link.reason!!.contains("origin $origin"), link.reason)
+        }
+    }
+
+    @Test
+    fun `a revoked attestation certificate is refused`() {
+        val (k1, k2) = alice.newDeviceKeyBatch(2)
+        val batchSerial = chainOf(alice, k1)[2].serialNumber.toString(16)
+        val issuer = LinkingIssuer(crypto, listOf(platform.root), walletOnly.copy(revokedSerials = setOf(batchSerial)))
+
+        val link = issuer.issueLink(listOf(chainOf(alice, k1), chainOf(alice, k2)), "revoked")
+        assertFalse(link.issued)
+        assertTrue(link.reason!!.contains("revoked"), link.reason)
+    }
+
+    @Test
+    fun `an expired attestation certificate is refused`() {
+        val (k1, k2) = alice.newDeviceKeyBatch(2)
+        val later = Instant.now().plus(java.time.Duration.ofDays(15L * 365))
+        val issuer = LinkingIssuer(crypto, listOf(platform.root), walletOnly, clock = { later })
+
+        val link = issuer.issueLink(listOf(chainOf(alice, k1), chainOf(alice, k2)), "expired")
+        assertFalse(link.issued)
+        assertTrue(link.reason!!.contains("valid only"), link.reason)
+    }
+
+    @Test
+    fun `a device without verified boot is refused unless the policy allows it`() {
+        val unlocked = platform.newWscd(
+            "unlocked",
+            rootOfTrust = RootOfTrust(deviceLocked = false, verifiedBootState = RootOfTrust.VERIFIED_BOOT_UNVERIFIED),
+        )
+        val chains = List(2) { requireNotNull(unlocked.attestationChain(unlocked.generateKey("k$it"))) }
+
+        val refused = linkingIssuer.issueLink(chains, "unlocked")
+        assertFalse(refused.issued)
+        assertTrue(refused.reason!!.contains("verified boot"), refused.reason)
+
+        val lenient = LinkingIssuer(crypto, listOf(platform.root), walletOnly.copy(requireVerifiedBoot = false))
+        assertTrue(lenient.issueLink(chains, "unlocked-allowed").issued)
+    }
+
+    @Test
+    fun `keys of an app that is not the wallet are refused`() {
+        val other = platform.newWscd(
+            "other-app",
+            app = AttestationApplicationId(setOf("com.example.notawallet"), setOf("00".repeat(32))),
+        )
+        val chains = List(2) { requireNotNull(other.attestationChain(other.generateKey("k$it"))) }
+
+        val link = linkingIssuer.issueLink(chains, "other-app")
+        assertFalse(link.issued)
+        assertTrue(link.reason!!.contains("com.example.notawallet"), link.reason)
+    }
+
+    @Test
+    fun `the attestation status list yields revoked and suspended serials`() {
+        val json = """
+            {"entries": {
+              "2c8cdddfd5e03bfc": {"status": "REVOKED", "expires": "2020-11-13", "reason": "KEY_COMPROMISE"},
+              "c8966fcb2fbb0d7a": {"status": "SUSPENDED", "reason": "SOFTWARE_FLAW"}
+            }}
+        """.trimIndent()
+        assertEquals(setOf("2c8cdddfd5e03bfc", "c8966fcb2fbb0d7a"), AttestationStatusList.revokedSerials(json))
+    }
+
+    @Test
     fun `a WSCD outside the trusted attestation PKI is refused`() {
         val mallory = WalletKeys("mallory", attestation = AttestationAuthority())
         val (k1, k2) = mallory.newDeviceKeyBatch(2)
@@ -93,7 +213,9 @@ class LinkingIssuerTest {
 
     /**
      * The same checks against chains from a real phone, recorded by attestkey-probe/ (run
-     * ./run.sh there first; skipped otherwise). Google's attestation roots are the anchors.
+     * ./run.sh there first; skipped otherwise). Google's attestation roots are the anchors;
+     * validity is checked at the time the probe ran, and revocation against Google's status list
+     * if verify_attestkey.py has cached it.
      */
     @Test
     fun `real device chains - co-resident keys linked, forgery and cross-WSCD pairs refused`() {
@@ -105,8 +227,14 @@ class LinkingIssuerTest {
         val googleRoots = Json.parseToJsonElement(roots.readText()).jsonArray.map {
             cf.generateCertificate(it.jsonPrimitive.content.byteInputStream()) as X509Certificate
         }
-        val deviceIssuer = LinkingIssuer(crypto, trustedRoots = googleRoots)
-        val levels = Json.parseToJsonElement(result!!.readText()).jsonObject["levels"]!!.jsonObject
+        val recorded = Json.parseToJsonElement(result!!.readText()).jsonObject
+        val ranAt = Instant.ofEpochMilli(recorded["run_id"]!!.jsonPrimitive.content.toLong())
+        val statusList = probe.resolve("attestation_status.json")
+        val policy = AttestationPolicy(
+            revokedSerials = if (statusList.exists()) AttestationStatusList.revokedSerials(statusList.readText()) else emptySet(),
+        )
+        val deviceIssuer = LinkingIssuer(crypto, trustedRoots = googleRoots, policy = policy, clock = { ranAt })
+        val levels = recorded["levels"]!!.jsonObject
 
         val firstKeys = mutableListOf<List<X509Certificate>>()
         for ((name, element) in levels) {
@@ -119,6 +247,16 @@ class LinkingIssuerTest {
 
             val genuine = deviceIssuer.issueLink(listOf(k1, k2), "device-$name")
             assertTrue(genuine.issued, "$name: ${genuine.reason}")
+            val app = KeyDescription.of(k1.first())?.applicationId
+            assertTrue(app != null && app.packageNames.all { it.startsWith("dev.eudi.akprobe") }, "$name: app id $app")
+
+            // The chain is only as good as its shortest-lived certificate: once that expires
+            // (a remotely provisioned one lasts about two weeks), the same keys are refused.
+            val expiry = k1.minOf { it.notAfter.toInstant() }
+            val afterExpiry = LinkingIssuer(crypto, googleRoots, policy, clock = { expiry.plusSeconds(86_400) })
+            val stale = afterExpiry.issueLink(listOf(k1, k2), "device-$name-expired")
+            assertFalse(stale.issued, "$name: accepted after $expiry")
+            assertTrue(stale.reason!!.contains("valid only"), stale.reason)
 
             val forgery = level["forgery"]!!.jsonObject
             val forged = certificate(

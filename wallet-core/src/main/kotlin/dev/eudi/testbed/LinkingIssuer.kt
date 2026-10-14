@@ -47,15 +47,22 @@ data class LinkResult(
  * key's certificate up to an attestation root. A single-use link credential is issued only if
  * every key is attested by **one** attest key.
  *
- * Three checks carry the soundness; each closes a forgery the probe on a real device
- * (attestkey-probe/) exercised:
+ * Four checks carry the soundness; each closes a forgery:
  *  - the chain ends at a trusted attestation root, so a self-made "attest key" is worthless;
  *  - the attest key's own attestation says purposes == {ATTEST_KEY} and origin GENERATED. An
  *    ordinary WSCD key signs whatever it is given, so it could put Bob's key in a certificate;
  *    only its purpose gives it away (names do not: Android uses one subject for every key);
- *  - each key's attestation says origin GENERATED, since an imported key existed outside.
- * An attest key signs nothing but the attestation of a key generated in its own WSCD, so a
- * pooled pair necessarily arrives under two attest keys, and the linking issuer refuses.
+ *  - the attest key's attestation is the first one in the chain, counting from the root. Only
+ *    that one was written with the platform's attestation key; a certificate below it was
+ *    signed by whatever key the chain names, so an ordinary key could vouch for a fake attest
+ *    key ("only the first occurrence of the extension in the chain can be trusted", Android's
+ *    key attestation guide);
+ *  - each key's attestation says origin GENERATED. KeyMint also attests imported keys with an
+ *    attest key, but records origin IMPORTED, so this is what excludes keys made elsewhere.
+ * An attest key signs nothing but the attestation of a key generated or imported in its own
+ * WSCD, so a pooled pair necessarily arrives under two attest keys, and the linking issuer
+ * refuses. [policy] adds what Android's guide requires of any attestation (validity at
+ * [clock] time, the revocation status list) and what a wallet needs (verified boot, the app).
  *
  * This realises assumption `as:li` (the linking issuer is honest and issues a link only over
  * keys attested co-resident), with `as:wscd` grounded in the attest key. The attest key is a
@@ -66,6 +73,8 @@ data class LinkResult(
 class LinkingIssuer(
     private val crypto: CryptoSink,
     trustedRoots: List<X509Certificate>,
+    private val policy: AttestationPolicy = AttestationPolicy(),
+    private val clock: () -> Instant = Instant::now,
 ) {
 
     val id: String = "https://localhost/eudi-testbed/linking-issuer"
@@ -184,11 +193,12 @@ class LinkingIssuer(
     }
 
     /**
-     * The checks on one key's chain (key, attest key, ..., root). Throws IllegalArgumentException
-     * with the reason when the chain does not prove the key was generated under an attest key.
+     * The checks on one key's chain (key, attest key, platform CAs, root). Throws
+     * IllegalArgumentException with the reason when the chain does not prove the key was
+     * generated in the WSCD that holds the attest key.
      */
     private fun attested(chain: List<X509Certificate>): Attested {
-        require(chain.size >= 2) { "a key arrived without its attestation chain" }
+        require(chain.size >= 3) { "a key arrived without its attestation chain" }
         val leaf = chain[0]
         val key = runCatching { ECKey.parse(leaf).toPublicJWK() }.getOrNull()
             ?: throw IllegalArgumentException("an attested key is not an EC key")
@@ -201,6 +211,17 @@ class LinkingIssuer(
         require(rootKeys.any { it.encoded.contentEquals(top.publicKey.encoded) || top.signedBy(it) }) {
             "the attestation chain of key $label is not anchored at a trusted attestation root"
         }
+        val now = Date.from(clock())
+        chain.forEachIndexed { i, cert ->
+            require(runCatching { cert.checkValidity(now) }.isSuccess) {
+                "certificate $i of the attestation chain of key $label is valid only from ${cert.notBefore} " +
+                    "to ${cert.notAfter}"
+            }
+            val serial = cert.serialNumber.toString(16)
+            require(serial !in policy.revokedSerials) {
+                "certificate $i of the attestation chain of key $label (serial $serial) is revoked"
+            }
+        }
 
         val attestKey = KeyDescription.of(chain[1])
         require(attestKey != null && attestKey.purposes == setOf(KeyDescription.PURPOSE_ATTEST_KEY)) {
@@ -208,15 +229,41 @@ class LinkingIssuer(
                 "{ATTEST_KEY(${KeyDescription.PURPOSE_ATTEST_KEY})}: an ordinary key signs whatever it is given, " +
                 "so its certificate proves nothing about where the key was generated"
         }
+        require(chain.drop(2).none { KeyDescription.present(it) }) {
+            "the attest key of key $label is vouched for by a certificate that itself carries an attestation: " +
+                "only the attestation closest to the root was written by secure hardware, so this attest key " +
+                "may have been made up by an ordinary key"
+        }
         require(attestKey.origin == KeyDescription.ORIGIN_GENERATED) {
             "the attest key of key $label was not generated in its WSCD"
         }
+        require(
+            attestKey.securityLevel in HARDWARE_LEVELS && attestKey.attestationSecurityLevel == attestKey.securityLevel,
+        ) {
+            "the attest key of key $label is not held by secure hardware (security level ${attestKey.securityLevel})"
+        }
         val description = KeyDescription.of(leaf)
         require(description != null && description.origin == KeyDescription.ORIGIN_GENERATED) {
-            "key $label was not generated in the WSCD (origin ${description?.origin ?: "unattested"})"
+            "key $label was not generated in the WSCD (origin ${KeyDescription.originName(description?.origin)})"
         }
-        require(description.securityLevel == attestKey.securityLevel) {
+        require(
+            description.securityLevel == attestKey.securityLevel &&
+                description.attestationSecurityLevel == attestKey.attestationSecurityLevel,
+        ) {
             "key $label and its attest key live at different security levels"
+        }
+
+        if (policy.requireVerifiedBoot) {
+            require(attestKey.rootOfTrust?.verified == true && description.rootOfTrust?.verified == true) {
+                "key $label comes from a device without a locked bootloader and verified boot " +
+                    "(${description.rootOfTrust ?: "no root of trust"})"
+            }
+        }
+        policy.trustedApps?.let { apps ->
+            val app = description.applicationId
+            require(app != null && apps.any { it.packageName in app.packageNames && it.signatureDigest in app.signatureDigests }) {
+                "key $label was generated by ${app?.packageNames ?: "an unnamed app"}, which is not a trusted wallet app"
+            }
         }
         return Attested(key, chain[1].publicKey.thumbprint())
     }
@@ -235,6 +282,8 @@ class LinkingIssuer(
     }
 
     companion object {
+        private val HARDWARE_LEVELS = setOf(KeyDescription.SECURITY_LEVEL_TEE, KeyDescription.SECURITY_LEVEL_STRONGBOX)
+
         private fun selfSign(key: ECKey): java.security.cert.X509Certificate {
             val now = Instant.now()
             val subject = X500Name("CN=EUDI Testbed Linking Issuer")

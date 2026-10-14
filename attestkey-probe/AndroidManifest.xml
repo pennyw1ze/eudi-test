@@ -15,4 +15,9 @@
             </intent-filter>
         </activity>
     </application>
+
+    <!-- Probe modes in a fresh process, started with am instrument so that late.sh can
+         disable hidden-API checks and LateAttestProbe can reach keystore2's binder interface. -->
+    <instrumentation android:name="dev.eudi.akprobe.ProbeInstrumentation"
+        android:targetPackage="dev.eudi.akprobe" />
 </manifest>

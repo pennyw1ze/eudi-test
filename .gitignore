@@ -39,3 +39,6 @@ docs/paper/
 # raw attestation chains recorded on the author's phone (device identifiers) — kept in the
 # private repo; copy them here to run LinkingIssuerTest's real-device case
 attestkey-probe/results/
+attestkey-probe/two-device-test/
+# Google's attestation status list, cached by verify_attestkey.py (public, changes daily)
+attestkey-probe/attestation_status.json

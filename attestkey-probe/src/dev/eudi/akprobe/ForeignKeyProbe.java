@@ -178,7 +178,7 @@ final class ForeignKeyProbe {
     }
 
     /** Public methods of a builder whose name mentions attestation: the platform's entry points. */
-    private static JSONArray attestationSetters(Class<?> builder) {
+    static JSONArray attestationSetters(Class<?> builder) {
         TreeSet<String> names = new TreeSet<>();
         for (Method m : builder.getMethods()) {
             if (m.getName().toLowerCase().contains("attest")) names.add(m.getName());

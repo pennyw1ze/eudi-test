@@ -2,10 +2,14 @@
 """Check an attest-key probe result: are two keys provably co-resident in one KeyMint?
 
 For each security level in a JSON written by the probe app:
-  1. the attest key (AK) chain verifies up to a Google attestation root;
-  2. the AK's own attestation says purposes == {ATTEST_KEY} and origin == GENERATED;
+  1. the attest key (AK) chain verifies up to a Google attestation root, every certificate was
+     valid when the probe ran, and none is on Google's attestation status list;
+  2. the AK's own attestation says purposes == {ATTEST_KEY} and origin == GENERATED, is held in
+     secure hardware, and is the first attestation in the chain counting from the root (only
+     that one was written with the platform's attestation key);
   3. k1 and k2 are signed by the AK, were GENERATED in the AK's security level, and carry
-     the challenges the app used.
+     the challenges the app used;
+  4. the device has a locked bootloader and verified boot.
 If all hold, k1 and k2 were generated in the KeyMint instance that holds the AK.
 
 It then replays the forgery the probe prepared (Bob's key in an attestation certificate
@@ -21,6 +25,7 @@ import json
 import statistics
 import sys
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 from cryptography import x509
@@ -31,6 +36,8 @@ from cryptography.x509.oid import ObjectIdentifier
 KEY_DESCRIPTION = ObjectIdentifier("1.3.6.1.4.1.11129.2.1.17")
 ROOTS_URL = "https://android.googleapis.com/attestation/root"
 ROOTS_CACHE = Path(__file__).with_name("google_roots.json")
+STATUS_URL = "https://android.googleapis.com/attestation/status"
+STATUS_CACHE = Path(__file__).with_name("attestation_status.json")
 ECDSA_SHA256 = bytes.fromhex("300a06082a8648ce3d040302")
 
 SECURITY_LEVEL = {0: "Software", 1: "TrustedEnvironment", 2: "StrongBox"}
@@ -38,7 +45,8 @@ PURPOSE = {0: "ENCRYPT", 1: "DECRYPT", 2: "SIGN", 3: "VERIFY", 5: "WRAP_KEY", 6:
 ORIGIN = {0: "GENERATED", 1: "DERIVED", 2: "IMPORTED", 3: "RESERVED", 4: "SECURELY_IMPORTED"}
 VERIFIED_BOOT = {0: "Verified", 1: "SelfSigned", 2: "Unverified", 3: "Failed"}
 ATTEST_KEY, GENERATED = 7, 0
-TAG_PURPOSE, TAG_ORIGIN, TAG_ROOT_OF_TRUST = 1, 702, 704
+TAG_PURPOSE, TAG_ORIGIN, TAG_ROOT_OF_TRUST, TAG_APPLICATION_ID = 1, 702, 704, 709
+HARDWARE_LEVELS = (1, 2)
 
 
 # --- minimal DER -------------------------------------------------------------------------
@@ -100,12 +108,26 @@ def key_description(cert):
     software, hardware = authorizations(fields[6][1]), authorizations(fields[7][1])
     return {
         "attestation_version": integer(fields[0][1]),
+        "attestation_security_level": integer(fields[1][1]),
         "keymint_version": integer(fields[2][1]),
         "keymint_security_level": integer(fields[3][1]),
         "challenge": fields[4][1],
         "purposes": purposes(hardware),
         "origin": integer(hardware[TAG_ORIGIN]) if TAG_ORIGIN in hardware else None,
         "root_of_trust": root_of_trust(hardware.get(TAG_ROOT_OF_TRUST)),
+        "application_id": application_id(software.get(TAG_APPLICATION_ID)),
+    }
+
+
+def application_id(value):
+    """AttestationApplicationId (software-enforced): package names and signing-cert digests."""
+    if value is None:
+        return None
+    _, content, _ = tlv(value)
+    packages, digests = items(content)
+    return {
+        "packages": sorted(items(info)[0][1].decode() for _, info in items(packages[1])),
+        "signature_digests": sorted(d.hex() for _, d in items(digests[1])),
     }
 
 
@@ -192,6 +214,38 @@ def load_roots():
     return [x509.load_pem_x509_certificate(p.encode()) for p in pems]
 
 
+def load_status():
+    """Serials (lowercase hex) that Google's attestation status list marks REVOKED/SUSPENDED."""
+    try:
+        with urllib.request.urlopen(STATUS_URL, timeout=20) as r:
+            data = json.load(r)
+        STATUS_CACHE.write_text(json.dumps(data))
+    except Exception as e:
+        if not STATUS_CACHE.exists():
+            sys.exit(f"cannot fetch the attestation status list ({e}) and there is no cache at {STATUS_CACHE}")
+        data = json.loads(STATUS_CACHE.read_text())
+    return {serial for serial, entry in data.get("entries", {}).items()
+            if entry.get("status") in ("REVOKED", "SUSPENDED")}
+
+
+def check_certificates(chain, at, revoked, report, what):
+    """Validity at the time the probe ran, and the status list, for every certificate."""
+    expired = [c for c in chain if not c.not_valid_before_utc <= at <= c.not_valid_after_utc]
+    report.check(not expired, f"{what}: every certificate valid on {at:%Y-%m-%d %H:%M} UTC"
+                 + (f" (not: {', '.join(c.subject.rfc4514_string() for c in expired)})" if expired else ""))
+    listed = [format(c.serial_number, "x") for c in chain if format(c.serial_number, "x") in revoked]
+    report.check(not listed, f"{what}: no certificate on the attestation status list"
+                 + (f" (listed: {', '.join(listed)})" if listed else ""))
+    first = min(chain, key=lambda c: c.not_valid_after_utc)
+    report.note(f"{what}: shortest-lived certificate {first.subject.rfc4514_string()[:60]} "
+                f"expires {first.not_valid_after_utc:%Y-%m-%d}")
+
+
+def verified_boot(d):
+    r = d and d["root_of_trust"]
+    return bool(r and r["device_locked"] and r["verified_boot_state"] == "Verified")
+
+
 def label(values, table):
     return "{" + ", ".join(table.get(v, str(v)) for v in values or []) + "}"
 
@@ -213,8 +267,8 @@ class Report:
         print(f"  [ .. ] {what}")
 
 
-def verify_pair(name, level, roots, report):
-    """Checks 1-3. Returns the AK certificate when the AK itself could be read."""
+def verify_pair(name, level, roots, report, revoked, at):
+    """Checks 1-4. Returns the AK certificate when the AK itself could be read."""
     print(f"\n== {name}: co-residency of k1 and k2")
     ak_info = level.get("ak", {})
     if "error" in ak_info:
@@ -224,12 +278,24 @@ def verify_pair(name, level, roots, report):
     ak = ak_chain[0]
     ok, why = chain_to_google(ak_chain, roots)
     report.check(ok, f"AK chain ({len(ak_chain)} certificates) {why}")
+    check_certificates(ak_chain, at, revoked, report, "AK chain")
     akd = key_description(ak)
     if not report.check(akd is not None, "AK certificate carries a KeyMint attestation"):
         return ak
+    above = [c for c in ak_chain[1:] if key_description(c) is not None]
+    report.check(not above, "AK attestation is the first in the chain counting from the root "
+                 "(no certificate above it carries one)")
     report.check(akd["purposes"] == [ATTEST_KEY],
                  f"AK purposes = {label(akd['purposes'], PURPOSE)} (must be exactly ATTEST_KEY)")
     report.check(akd["origin"] == GENERATED, f"AK origin = {ORIGIN.get(akd['origin'], akd['origin'])}")
+    report.check(akd["keymint_security_level"] in HARDWARE_LEVELS
+                 and akd["attestation_security_level"] == akd["keymint_security_level"],
+                 f"AK held by secure hardware (attestation and KeyMint security level "
+                 f"{SECURITY_LEVEL.get(akd['attestation_security_level'])}/{SECURITY_LEVEL.get(akd['keymint_security_level'])})")
+    report.check(verified_boot(akd), f"AK created on a locked, verified-boot device ({akd['root_of_trust'] and akd['root_of_trust']['verified_boot_state']})")
+    if akd["application_id"]:
+        report.note(f"AK app: {', '.join(akd['application_id']['packages'])} "
+                    f"(signing cert {akd['application_id']['signature_digests'][0][:16]}…)")
     if "challenge" in ak_info:
         report.check(akd["challenge"] == b64d(ak_info["challenge"]), "AK attestation carries the app's challenge")
     sec = akd["keymint_security_level"]
@@ -248,8 +314,9 @@ def verify_pair(name, level, roots, report):
         if not report.check(d is not None, f"{k} certificate carries a KeyMint attestation"):
             continue
         report.check(d["origin"] == GENERATED, f"{k} origin = {ORIGIN.get(d['origin'], d['origin'])}")
-        report.check(d["keymint_security_level"] == sec,
+        report.check(d["keymint_security_level"] == sec and d["attestation_security_level"] == sec,
                      f"{k} security level = {SECURITY_LEVEL.get(d['keymint_security_level'])}")
+        report.check(verified_boot(d), f"{k} created on a locked, verified-boot device")
         report.check(d["challenge"] == b64d(info["challenge"]), f"{k} attestation carries the app's challenge")
     return ak
 
@@ -304,6 +371,8 @@ def privacy_notes(ak_chain_b64):
 
 def main(paths):
     roots = load_roots()
+    revoked = load_status()
+    print(f"attestation status list: {len(revoked)} revoked or suspended serials")
     report = Report()
     seen_aks = {}
     for path in paths:
@@ -312,9 +381,10 @@ def main(paths):
         print(f"\n##### {path}\n{dev['manufacturer']} {dev['model']}, Android {dev['release']} "
               f"(API {dev['sdk']}, patch {dev['security_patch']}); StrongBox {dev['strongbox']}, "
               f"app attest keys {dev['app_attest_keys']}")
+        at = datetime.fromtimestamp(result["run_id"] / 1000, tz=timezone.utc)
         for name, level in result["levels"].items():
             before = report.failures
-            ak = verify_pair(name, level, roots, report)
+            ak = verify_pair(name, level, roots, report, revoked, at)
             replay_forgery(level, roots, report)
             report_level_extras(level, report)
             if ak is not None:
